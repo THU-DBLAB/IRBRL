@@ -1,7 +1,7 @@
-site_name: Reinforcement Route
-repo_name: 'Lu-Yi-Hsun/home'
-repo_url: 'https://github.com/Lu-Yi-Hsun/home'
-site_url: 'https://lu-yi-hsun.github.io/home/'
+site_name: IRBRL
+repo_name: 'Lu-Yi-Hsun/IRBRL'
+repo_url: 'https://github.com/THU-DBLAB/IRBRL'
+site_url: 'https://thu-dblab.github.io/IRBRL/'
 edit_uri: "" # this code say do not view edit on page
 extra:
   disqus: 'lu-yi-hsun'
