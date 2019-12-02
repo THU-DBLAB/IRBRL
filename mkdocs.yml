@@ -1,0 +1,69 @@
+site_name: Reinforcement Route
+repo_name: 'Lu-Yi-Hsun/home'
+repo_url: 'https://github.com/Lu-Yi-Hsun/home'
+site_url: 'https://lu-yi-hsun.github.io/home/'
+edit_uri: "" # this code say do not view edit on page
+extra:
+  disqus: 'lu-yi-hsun'
+  search:
+    language: 'jp'
+    #-tokenizer: '[\a\-\.]+'
+  social:
+    - type: 'github'
+      link: 'https://github.com/Lu-Yi-Hsun/'
+    - type: 'facebook'
+      link: 'https://www.facebook.com/profile.php?id=100001559307331'
+    #- type: 'twitter'
+      #link: 'https://twitter.com/squidfunk'
+   # - type: 'linkedin'
+     # link: 'https://linkedin.com/in/squidfunk'
+    
+
+theme:
+  language: "en"
+  name: 'material' #readthedocs/readthedocs
+  palette:
+    primary: 'indigo'
+    accent: 'Blue Grey'
+  feature:
+    tabs: false
+  font:
+    text: 'Roboto'
+    code: 'Roboto Mono'
+  favicon: images/icon/mars.png
+  
+
+# Extensions
+markdown_extensions:
+  - footnotes
+  - markdown.extensions.admonition
+#  - markdown.extensions.codehilite:
+ #     guess_lang: false
+ #     linenums: true
+  - markdown.extensions.def_list
+  - markdown.extensions.footnotes
+  - markdown.extensions.meta
+  - markdown.extensions.toc:
+      permalink: true
+  - pymdownx.superfences:
+      preserve_tabs: true
+  - pymdownx.arithmatex
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+   
+  - pymdownx.inlinehilite
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  
+extra_javascript:
+ - 'javascripts/extra.js'
+ - 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js'
+

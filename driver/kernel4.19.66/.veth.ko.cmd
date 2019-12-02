@@ -1,0 +1,1 @@
+cmd_/home/lu-yi-hsun/Dropbox/my-project/driver/kernel4.19.66/veth.ko := ld -r -m elf_x86_64  -z max-page-size=0x200000 -T ./scripts/module-common.lds  --build-id  -o /home/lu-yi-hsun/Dropbox/my-project/driver/kernel4.19.66/veth.ko /home/lu-yi-hsun/Dropbox/my-project/driver/kernel4.19.66/veth.o /home/lu-yi-hsun/Dropbox/my-project/driver/kernel4.19.66/veth.mod.o ;  true
