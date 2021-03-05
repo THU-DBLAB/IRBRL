@@ -24,7 +24,7 @@ def myNetwork():
                            port=6633)
 
     info('*** Add switches\n')
-    s2 = net.addSwitch('s2', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.3")
+    #s2 = net.addSwitch('s2', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.3")
     s1 = net.addSwitch('s1', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.4")
      
     #s2.cmd('sudo ethtool -s s2-eth1 speed 100')
@@ -35,8 +35,8 @@ def myNetwork():
     delay="100ms"
     info('*** Add links\n')
     #https://github.com/mininet/mininet/blob/de28f67a97fc8915cc1586c984465d89a016d8eb/mininet/link.py#L314
-    net.addLink(s1, h1,cls=TCLink, bw=100,jitter="0ms",delay="10ms",loss=0,max_queue_size=111)
-    net.addLink(h2, s2,cls=TCLink, bw=100,jitter="0ms",delay="10ms",loss=0,max_queue_size=111)
+    net.addLink(s1, h1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
+    net.addLink(h2, s1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
     #mininet 的delay,jitter,loss底層是依靠netem(Network Emulation)模擬
     #由於mininet底層呼叫netem時沒有設定jitter的分佈狀態,所以netem依照默認設定是normal(常態分佈)
     #https://git.kernel.org/pub/scm/network/iproute2/iproute2.git/tree/man/man8/tc-netem.8#n89
@@ -45,9 +45,9 @@ def myNetwork():
     #https://git.kernel.org/pub/scm/network/iproute2/iproute2.git/tree/man/man8/tc-netem.8#n23
     #uniform " | " normal " | " pareto " |  " paretonormal
  
-    l=net.addLink(s1, s2,port1=888,port2=321,cls=TCLink, bw=1000,jitter="450ms",delay="0.75s",loss=11,max_queue_size=23)
-    print(str(l),"****jjjjjjjjjjjjjjjjjj****")
-    net.addLink(s1, s2,port1=433,port2=32232,cls=TCLink, bw=10,jitter="0ms",delay="0s",loss=0,max_queue_size=2223)
+    #net.addLink(s1, s2,port1=888,port2=321,cls=TCLink, bw=1000,jitter="450ms",delay="0.75s",loss=11,max_queue_size=23)
+    #print(str(l),"****jjjjjjjjjjjjjjjjjj****")
+    #net.addLink(s1, s2,port1=433,port2=32232,cls=TCLink, bw=10,jitter="0ms",delay="0s",loss=0,max_queue_size=2223)
 
     #print(a)
     #a.cmd("sudo ethtool -s s1-eth1 speed 100")
@@ -57,10 +57,10 @@ def myNetwork():
     info('*** Starting network\n')
     net.build()
     ##
-    print(s1.cmd('sudo ethtool -s s1-eth888 speed 1000'))
-    s1.cmd('sudo ethtool -s s1-eth433 speed 10')
-    s1.cmd('sudo ethtool -s s2-eth321 speed 1000')
-    s1.cmd('sudo ethtool -s s2-eth32232 speed 10')
+    #print(s1.cmd('sudo ethtool -s s1-eth888 speed 1000'))
+    #s1.cmd('sudo ethtool -s s1-eth433 speed 10')
+    #s1.cmd('sudo ethtool -s s2-eth321 speed 1000')
+    #s1.cmd('sudo ethtool -s s2-eth32232 speed 10')
     #s2.cmd('sudo ethtool -s s2-eth32232 speed 1000')
     
     #print(s1.cmd('sudo ethtool -s s2-eth1 speed 1000000'))
@@ -70,7 +70,7 @@ def myNetwork():
         controller.start()
 
     info('*** Starting switches\n')
-    net.get('s2').start([c0])
+    #net.get('s2').start([c0])
     net.get('s1').start([c0])
 
     info('*** Post configure switches and hosts\n')

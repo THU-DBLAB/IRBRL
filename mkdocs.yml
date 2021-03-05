@@ -67,3 +67,6 @@ extra_javascript:
  - 'javascripts/extra.js'
  - 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js'
 
+extra:
+  version:
+    provider: mike

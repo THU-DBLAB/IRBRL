@@ -6,13 +6,11 @@ import time
 import logging
 import networkx as nx
 import json
-
 from utils import log, dict_tool
 from tui import tui
 from route_metrics import formula
 from nested_dict import *
 import numpy as np
-
 # RYU
 from ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_5
@@ -69,14 +67,26 @@ class RinformanceRoute(app_manager.RyuApp):
         self._monitor_link_wait = 1
         self._monitor_sent_opedl_packets = 50
         self._monitor_each_opeld_extra_byte = 0  # self.MTU-16#max=
-        self._monitor_wait_opeld_back = 2  # sec
+        self._monitor_wait_opeld_back = 2  # sec 超過此時間的封包都會被當作遺失
 
         # NOTE Text-based user interface(tui)
-        if CONF.RR.TUI:
-            self._run_tui_htread = hub.spawn(self._run_tui)
-            self._update_tui_htread = hub.spawn(self._update_tui)
+        #if CONF.RR.TUI:
+        self._run_tui_htread = hub.spawn(self._run_tui)
+        self._update_tui_htread = hub.spawn(self._update_tui)
 
         # NOTE self.G = nx.DiGraph() Design
+
+        """
+        利用DiGraph抽象全雙工,並且直接呼叫nx.shortest_path(self.G,(交換機1,None),(交換機2,None),weight="weight")導出路由細節
+        節點(Node)
+            -交換機-這個Node會塞交換機的統計訊息
+            -交換機每個port
+        線(Edge)
+            -交換機與port
+            -port與port-這個Edge會塞鏈路計算的統計訊息
+        所以需要check_edge_is_link,check_node_is_switch
+        """
+
         """
                  weight=0         Edge          weight=0
                  +----+        +-------+        +----+
@@ -94,26 +104,27 @@ class RinformanceRoute(app_manager.RyuApp):
         len(ofp_multipart_type)==20
         ""$"" mean python variable
 
-        self.G.nodes[($datapath.id,None)] |["datapath"]=<Datapath object>
-                                          |["port"]={$port_id:{
+        self.G.nodes[($datapath.id,None)]   |["datapath"]=<Datapath object>
+                                            |["port"]={$port_id:{
                                                         "DSCP_METER_SET_FLAG":True/{},
                                                         "OFPMP_PORT_DESC":
                                                                 {"port_no": 1, "length": 72, "hw_addr": "be:f3:b6:8a:f8:1e", "config": 0,"state": 4, "properties": [{"type": 0, "length": 32, "curr": 2112,"advertised": 0, "supported": 0, "peer": 0, "curr_speed": 10000000,"max_speed": 0}], "update_time": 1552314248.2066813
                                                                 },
-                                                       "OFPMP_PORT_STATS":
+                                                        "OFPMP_PORT_STATS":
                                                                 {'length': 304, 'port_no': 2, 'duration_sec': 17, 'duration_nsec': 235000000, 'rx_packets': 11, 'tx_packets': 10, 'rx_bytes': 698, 'tx_bytes': 684, 'rx_dropped': 0, 'tx_dropped': 0, 'rx_errors': 0, 'tx_errors': 0, 'properties': [{'type': 0, 'length': 40, 'rx_frame_err': 0, 'rx_over_err': 0, 'rx_crc_err': 0, 'collisions': 0}, {'type': 65535, 'length': 184, 'experimenter': 43521, 'exp_type': 1, 'data': [
                                                                     0, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295]}], 'update_time': 1553333684.6574402, 'rx_bytes_delta': 14, 'tx_bytes_delta': 14},
 
-                                                       #for ARP table
-                                                       "host":{[ip address]:[mac adress]}
-                                                       }
-                                             }
-                                   #sec 'active working duration of all port '
-                                   |["all_port_duration_s"]=<class 'int'>
-                                   #temp when del the port, a new port restart,    #OFPMP_PORT_STATS's duration_sec will be zero
-                                   |["all_port_duration_s_temp"]=<class 'int'>
+                                                        #for ARP table
+                                                        "host":{[ip address]:[mac adress]}
+                                                        }
+                                            }
+                                            #sec 'active working duration of all port '
+                                            |["all_port_duration_s"]=<class 'int'>
+                                            #temp when del the port, a new port restart,    #OFPMP_PORT_STATS's duration_sec will be zero
+                                            |["all_port_duration_s_temp"]=<class 'int'>
+                                            |["FLOW_TABLE"]={
 
-
+                                            }
         """
         # NOTE EDGES STRUCT SPEC
         # Support Link Aggregation
@@ -122,7 +133,7 @@ class RinformanceRoute(app_manager.RyuApp):
         """
         self.G[($datapath.id1,$datapath.port1)][($datapath.id2,$datapath.port2)]|["detect"]|["latency_ms"]:0~max
                                                                                            |["jitter_ms"]:0~max
-                                                                                           |["bandwidth_bytes_per_s"]:0~max_bandwidth
+                                                                                           |["bandwidth_bytes_per_s"]:0~max_bandwidth　重要!!這個代表可用的頻寬
                                                                                            |["loss_percent"]:0~1%
                                                                                 |["tmp"][$seq]={"start":timestamp,"end":timestamp}
 
@@ -130,7 +141,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
         """
 
-        #!SECTION '
+    #!SECTION
 # ────────────────────────────────────────────────────────────────────────────────
     """SECTION For DiGraph
     +-+-+-+ +-+-+-+-+-+-+-+
@@ -162,9 +173,7 @@ class RinformanceRoute(app_manager.RyuApp):
     # NOTE Monitor
 
     def _monitor(self):
-
         time.sleep(3)
-
         def decorator_node_iteration(func):
             def node_iteration():
                 while True:
@@ -183,57 +192,46 @@ class RinformanceRoute(app_manager.RyuApp):
         def _update_switch(datapath):
             self.send_port_stats_request(datapath)
             self.send_port_desc_stats_request(datapath)
-
         # @decorator_node_iteration
-
         def _update_link():
-
             def clear_link_tmp_data():
                 for edge in list(self.G.edges()):
-
                     edge_id1 = edge[0]
                     edge_id2 = edge[1]
                     if self.check_edge_is_link(edge_id1, edge_id2):
                         # self.G[start_switch][end_switch]["port"][end_switch]
                         link_data = self.G[edge_id1][edge_id2]
                         link_data["tmp"] = nested_dict()
-
             def sent_opeld_to_all_port():
                 for node_id in self.G.nodes:
                     if self.check_node_is_switch(node_id):
                         switch_data = self.G.nodes[node_id]
+                        #
+                        switch_data=switch_data.copy()
                         for port_no in switch_data["port"].keys():
                             # if the port can working
                             if switch_data["port"][port_no]["OFPMP_PORT_DESC"]["state"] == ofproto_v1_5.OFPPS_LIVE:
                                     self.send_opeld_packet(
                                         switch_data["datapath"], port_no, extra_byte=self._monitor_each_opeld_extra_byte, num_packets=self._monitor_sent_opedl_packets)
-
             while True:
                 # NOTE start
                 # print(self.G.nodes[datapath.id]["port"][1]["OFPMP_PORT_DESC"]["properties"],datapath.id)
-                clear_link_tmp_data()
-
+                clear_link_tmp_data()#重算所有統計
                 # sent opeld to all port of each switch for doing link detect and topology detect
-                sent_opeld_to_all_port()
-
+                sent_opeld_to_all_port()#發送封包
                 # wait for packet back
                 time.sleep(self._monitor_wait_opeld_back)
-
-            
                 # print(self.G[2][1]["tmp"])
                 # print(self.G[2][1]["port"])
-               
                 for edge in list(self.G.edges()):
                     edge_id1 = edge[0]
                     edge_id2 = edge[1]
                     if self.check_edge_is_link(edge_id1, edge_id2):
                         start_switch = (edge_id1[0],None)
                         start_port_number = edge_id1[1]
-
                         end_switch = (edge_id2[0],None)
                         end_port_number = edge_id2[1]
                         # print(self.G[start_switch][end_switch]["tmp"])
-
                         packet_start_time = []
                         packet_end_time = []
                         seq_packet = self.G[edge_id1][edge_id2]["tmp"]
@@ -246,54 +244,50 @@ class RinformanceRoute(app_manager.RyuApp):
                         latency = []
                         for s_t, e_t in zip(packet_start_time, packet_end_time):
                             latency.append(e_t-s_t)
-
-                        all_t = max(packet_end_time)-min(packet_start_time)
+                        
+                        #all_t = max(packet_end_time)-min(packet_start_time)
                         # jitter
 
-                            
-                    
-                        curr_speed = min(int(self.G.nodes[start_switch]["port"][start_port_number]["OFPMP_PORT_DESC"]["properties"][0]["curr_speed"]), int(
-                            self.G.nodes[end_switch]["port"][end_port_number]["OFPMP_PORT_DESC"]["properties"][0]["curr_speed"]))  # curr_speed kbps
-
-                        tx_bytes_delta = int(
-                            self.G.nodes[start_switch]["port"][start_port_number]["OFPMP_PORT_STATS"]["tx_bytes_delta"])
+                        if len(packet_end_time)!=0 or len(packet_start_time)!=0:
                         
-                        jitter = abs(np.std(latency) * 1000)  # millisecond
-                        # A. S. Tanenbaum and D. J. Wetherall, Computer Networks, 5th ed. Upper Saddle River, NJ, USA: Prentice Hall Press, 2010.
-                        # "The variation (i.e., standard deviation) in the delay or packet arrival times is called jitter."
+                            curr_speed = min(int(self.G.nodes[start_switch]["port"][start_port_number]["OFPMP_PORT_DESC"]["properties"][0]["curr_speed"]), int(
+                                self.G.nodes[end_switch]["port"][end_port_number]["OFPMP_PORT_DESC"]["properties"][0]["curr_speed"]))  # curr_speed kbps
 
-                        # default one packet from A TO B latency millisecond(ms)
-                        delay_one_packet = abs(np.mean(latency)*1000)
-                        loss = 1-(get_packets_number /
-                                    self._monitor_sent_opedl_packets)
-                        # bytes_s=(get_packets_number*(self._monitor_each_opeld_extra_byte+16))/all_t
-
-                        # available using bandwith bytes per second
-                        # curr_speed is kbps
-                        bw = ((1000*curr_speed)/8) - \
-                            (tx_bytes_delta/self.delta)
-                        # print(start_switch,end_switch,link_index,"jitter",jitter,"delay_one_packet",delay_one_packet,"loss",loss,"gbytes_s",bw)
-
-                        # millisecond
-                        self.G[edge_id1][edge_id2]["detect"]["jitter_ms"] = jitter
-                        # %how many percent of the packet loss
-                        self.G[edge_id1][edge_id2]["detect"]["loss_percent"] = loss
-                        # available bandwidth
-                        self.G[edge_id1][edge_id2]["detect"]["bandwidth_bytes_per_s"] = bw
-                        # from a to b ,just one way ,millisecond
-                        self.G[edge_id1][edge_id2]["detect"]["latency_ms"] = delay_one_packet
-                        self.G[edge_id1][edge_id2]["weight"] = formula.OSPF(bw*8)
-                        from itertools import islice
+                            tx_bytes_delta = int(
+                                self.G.nodes[start_switch]["port"][start_port_number]["OFPMP_PORT_STATS"]["tx_bytes_delta"])
                             
-                        #print(nx.shortest_path(self.G,(1,None),(2,None),weight="weight"),nx.shortest_path_length(self.G,(1,None),(2,None),weight="weight"))
-                        #try:
-                            #print(list(islice(nx.shortest_simple_paths(self.G, (1,None), (2,None), weight="weight"), 2)))
-                        #except:
-                         #   pass
-                
+                            jitter = abs(np.std(latency) * 1000)  # millisecond
+                            # A. S. Tanenbaum and D. J. Wetherall, Computer Networks, 5th ed. Upper Saddle River, NJ, USA: Prentice Hall Press, 2010.
+                            # "The variation (i.e., standard deviation) in the delay or packet arrival times is called jitter."
+                            # default one packet from A TO B latency millisecond(ms)
+                            delay_one_packet = abs(np.mean(latency)*1000)
+                            loss = 1-(get_packets_number /
+                                        self._monitor_sent_opedl_packets)
+                            # bytes_s=(get_packets_number*(self._monitor_each_opeld_extra_byte+16))/all_t
 
-                 
+                            # available using bandwith bytes per second
+                            # curr_speed is kbps
+                            bw = ((1000*curr_speed)/8) - \
+                                (tx_bytes_delta/self.delta)
+                            # print(start_switch,end_switch,link_index,"jitter",jitter,"delay_one_packet",delay_one_packet,"loss",loss,"gbytes_s",bw)
 
+                            # millisecond
+                            self.G[edge_id1][edge_id2]["detect"]["jitter_ms"] = jitter
+                            # %how many percent of the packet loss
+                            self.G[edge_id1][edge_id2]["detect"]["loss_percent"] = loss
+                            # available bandwidth
+                            self.G[edge_id1][edge_id2]["detect"]["bandwidth_bytes_per_s"] = bw
+                            # from a to b ,just one way ,millisecond
+                            self.G[edge_id1][edge_id2]["detect"]["latency_ms"] = delay_one_packet
+                            self.G[edge_id1][edge_id2]["weight"] = formula.OSPF(bw*8)
+                            
+                            from itertools import islice
+                                
+                            #print(nx.shortest_path(self.G,(1,None),(2,None),weight="weight"),nx.shortest_path_length(self.G,(1,None),(2,None),weight="weight"))
+                            #try:
+                                #print(list(islice(nx.shortest_simple_paths(self.G, (1,None), (2,None), weight="weight"), 2)))
+                            #except:
+                            #   pass
         # print("ok")
         self._sent_echo_thread = hub.spawn(_sent_echo)
         self._update_switch_thread = hub.spawn(_update_switch)
@@ -353,14 +347,13 @@ class RinformanceRoute(app_manager.RyuApp):
             self.TUI_Mapping[Mapping_idx] = "Topology Link"
             Mapping_idx += 1
             # self.TUI_Mapping[Mapping_idx]=str(self.G.edges())
+            #print(self.G.edges())
             for edge in list(self.G.edges()):
                 edge_id1 = edge[0]
                 edge_id2 = edge[1]
                 if self.check_edge_is_link(edge_id1, edge_id2):
-
                     # self.G[start_switch][end_switch]["port"][end_switch]
                     ed = self.G[edge_id1][edge_id2]
-
                     edge_start = "datapath ID " + \
                         str(edge_id1[0]) + " port_no "+str(edge_id1[1])
                     edge_end = "datapath ID " + \
@@ -382,6 +375,7 @@ class RinformanceRoute(app_manager.RyuApp):
                     link_data = "loss_percent:"+loss_percent + \
                         " "+"bandwidth_bytes_per_s:"+bandwidth_bytes_per_s+" " + \
                             "latency_ms:"+latency_ms+" "+"jitter_ms"+jitter_ms
+                    #print(link_data)
                     self.TUI_Mapping[Mapping_idx] = link_data
                     Mapping_idx += 1
   #              self.G[start_switch][end_switch]["detect"][link_index]["jitter_ms"]=jitter#millisecond
@@ -412,7 +406,7 @@ class RinformanceRoute(app_manager.RyuApp):
     # NOTE: OFPT_FEATURES_REPLY
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _switch_features_handler(self, ev):
-        def init_node(datapath):
+        def init_node():
             node_id = (datapath.id, None)
             if not self.G.has_node(node_id):
                 self.G.add_node(node_id)
@@ -420,26 +414,28 @@ class RinformanceRoute(app_manager.RyuApp):
                 self.G.nodes[node_id]["port"] = nested_dict()
                 self.G.nodes[node_id]["all_port_duration_s_temp"] = 0
                 self.G.nodes[node_id]["all_port_duration_s"] = 0
-
-        def init_start_new_switch(datapath):
+                self.G.nodes[node_id]["FLOW_TABLE"] = nested_dict()
+        def init_start_new_switch():
+            pass
             #set_meter_table is in _port_desc_stats_reply_handler
             #FIXME EDGE SWITCH AND TRANSIT SWITCH flow table 1 NOT ADD YET
         def set_flow_table_0_control_and_except():
             #Control and exception handling packets 
             #set_flow_table_0_DSCP() is in _port_desc_stats_reply_handler
-            self.control_and_except(datapath,ether_type=self.OpELD_EtherType,ip_proto=None,icmpv6_type=None)
-            self.control_and_except(datapath,ether_type=self.OpEQW_EtherType,ip_proto=None,icmpv6_type=None)
-            self.control_and_except(datapath,ether_type=ether_types.ETH_TYPE_ARP,ip_proto=None,icmpv6_type=None)
-            self.control_and_except(datapath,ether_type=None,ip_proto=in_proto.IPPROTO_ICMPV6,icmpv6_type=icmpv6.ND_NEIGHBOR_SOLICIT)
+            self.control_and_except(datapath,eth_type=self.OpELD_EtherType)
+            self.control_and_except(datapath,eth_type=self.OpEQW_EtherType)
+            self.control_and_except(datapath,eth_type=ether_types.ETH_TYPE_ARP)
+            self.control_and_except(datapath,eth_type=ether_types.ETH_TYPE_IPV6,ip_proto=in_proto.IPPROTO_ICMPV6,icmpv6_type=icmpv6.ND_NEIGHBOR_SOLICIT)
             
         def set_flow_table_1():
-            self.add_all_flow_to_table(2)
-        self.send_port_desc_stats_request(datapath)
-
+            
+            self.add_all_flow_to_table(datapath,1,2)
+         
         msg = ev.msg
         datapath = msg.datapath
-        init_node(datapath)
-        init_start_new_switch(datapath)
+        self.send_port_desc_stats_request(datapath)
+        init_node()
+        init_start_new_switch()
 
         set_flow_table_0_control_and_except()
         set_flow_table_1()
@@ -475,6 +471,7 @@ class RinformanceRoute(app_manager.RyuApp):
             datapath.id, None)]["all_port_duration_s_temp"]
         # get the list of "close port"
         close_port = list(self.G.nodes[(datapath.id, None)]["port"].keys())
+        all_port_duration_s=0
         for OFPPortStats in ev.msg.body:
             if OFPPortStats.port_no < ofp.OFPP_MAX:
                 # OFPPortStats is a "class",so it need to covent to dict
@@ -533,13 +530,14 @@ class RinformanceRoute(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def _port_desc_stats_reply_handler(self, ev):
         def set_meter_table(inport_num,curr_speed):
-                                    #curr_speed max speed of the port
+            #curr_speed max speed of the port
             #conbin inport(24bit) and id(8bit) to 32bit
                            
             for priority,rate_per in zip(range(0,7),range(4,11)):
-                meter_id=int(bin(1)[2:].zfill(inport_num)+bin(1)[2:].zfill(priority),2)
+                meter_id=int(bin(inport_num)[2:].zfill(24)+bin(priority)[2:].zfill(8),2)
+                 
                 percent= rate_per/10 #40%~100%
-                self.add_meter(datapath,meter_id,percent*curr_speed)
+                self.add_meter(datapath,meter_id,int(percent*curr_speed))
         def set_flow_table_0_DSCP(inport_num):
                 #datapath,dscp,IPVx,table_id,meter_id
                 #dscp:
@@ -548,10 +546,9 @@ class RinformanceRoute(app_manager.RyuApp):
                 #0b010 000=16
                 #0b011 000=24
                 #dscp=8*meter_id
-                 
                 for priority in range(7):
                     #IPV4
-                    meter_id=int(bin(1)[2:].zfill(inport_num)+bin(1)[2:].zfill(priority),2)
+                    meter_id=int(bin(inport_num)[2:].zfill(24)+bin(priority)[2:].zfill(8),2)
                     self.DSCP_flow(datapath,inport_num,8*priority,ether_types.ETH_TYPE_IP,1,meter_id)
                     #IPV6
                     self.DSCP_flow(datapath,inport_num,8*priority,ether_types.ETH_TYPE_IPV6,1,meter_id)
@@ -581,9 +578,6 @@ class RinformanceRoute(app_manager.RyuApp):
         for OFPPort in ev.msg.body:
             if OFPPort.port_no < ofp.OFPP_MAX:
                 # check it have been set or not
-                 
-                 
-                
                 #data var format
                 """{"port_no": 1, "length": 72, "hw_addr": "be:f3:b6:8a:f8:1e", "config": 0,"state": 4, "properties": [{"type": 0, "length": 32, "curr": 2112,"advertised": 0, "supported": 0, "peer": 0, "curr_speed": 10000000,"max_speed": 0}], "update_time": 1552314248.2066813
                 }"""
@@ -596,8 +590,9 @@ class RinformanceRoute(app_manager.RyuApp):
                 DSCP_METER_SET_FLAG=self.G.nodes[(datapath.id,None)]["port"][OFPPort.port_no]["DSCP_METER_SET_FLAG"]
                 if DSCP_METER_SET_FLAG!=True:
                     curr_speed=data["properties"][0]["curr_speed"]
-                    set_flow_table_0_DSCP(OFPPort.port_no)
+                   
                     set_meter_table(OFPPort.port_no,curr_speed)
+                    set_flow_table_0_DSCP(OFPPort.port_no)
                     self.G.nodes[(datapath.id,None)]["port"][OFPPort.port_no]["DSCP_METER_SET_FLAG"]=True
 
 
@@ -614,12 +609,32 @@ class RinformanceRoute(app_manager.RyuApp):
 # ────────────────────────────────────────────────────────────────────────────────
 
     # SECTION Modify Flow Entry Message
-    def add_all_flow_to_table(self, datapath,table_id):
+    
+    """
+    mod type is  <class 'ryu.ofproto.ofproto_v1_5_parser.OFPFlowMod'>
+    
+    mod.__dict__ can get this 
+    {'datapath': <ryu.controller.controller.Datapath object at 0x7f6f7bf78b10>, 'version': None, 'msg_type': None, 'msg_len': None, 'xid': None, 'buf': None, 'cookie': 0, 'cookie_mask': 0, 'table_id': 0, 'command': 0, 'idle_timeout': 0, 'hard_timeout': 0, 'priority': 1, 'buffer_id': 4294967295, 'out_port': 0, 'out_group': 0, 'flags': 0, 'importance': 0, 'match': OFPMatch(oxm_fields={'in_port': 321, 'eth_type': 34525, 'ip_dscp': 40}), 'instructions': [OFPInstructionActions(actions=[OFPActionMeter(len=8,meter_id=82181,type=29)],type=4), OFPInstructionGotoTable(len=8,table_id=1,type=1)]}
+    """
+    def _send_ADD_FlowMod(self,datapath,mod,identify_route=None):
+        OFPFlowMod=mod.__dict__ 
+        table_id=OFPFlowMod["table_id"]
+        #match=OFPFlowMod["match"]
+        priority=OFPFlowMod["priority"]
+        self.G.nodes[(datapath.id,None)]["FLOW_TABLE"][table_id][priority][mod]=identify_route
+        datapath.send_msg(mod)
+        
+     
+
+    def add_all_flow_to_table(self, datapath,from_table_id,to_table_id):
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
         match = parser.OFPMatch()
-        actions = [parser.OFPInstructionGotoTable(2)]
-        self.add_flow(datapath, 0, match, actions)
+        inst = [parser.OFPInstructionGotoTable(to_table_id)]
+        mod = parser.OFPFlowMod(datapath=datapath, table_id=from_table_id,priority=0,
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst)
+        
+        self._send_ADD_FlowMod(datapath,mod)
 
     def drop_all(self, datapath):
         ofp = datapath.ofproto
@@ -629,13 +644,13 @@ class RinformanceRoute(app_manager.RyuApp):
         instruction = [
             parser.OFPInstructionActions(ofp.OFPIT_CLEAR_ACTIONS, [])
         ]
-        msg = parser.OFPFlowMod(datapath=datapath,
+        mod = parser.OFPFlowMod(datapath=datapath,
                                 priority=0,
                                 command=ofp.OFPFC_ADD,
                                 match=match,
                                 instructions=instruction
                                 )
-        datapath.send_msg(msg)
+        self._send_ADD_FlowMod(datapath,mod)
 
     def add_lldp_flow(self, datapath):
         ofp = datapath.ofproto
@@ -650,29 +665,31 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
-        datapath.send_msg(mod)
+        self._send_ADD_FlowMod(datapath,mod)
     def DSCP_flow(self,datapath,in_port,dscp,IPVx,table_id,meter_id):
         #IPVx=ether_types.ETH_TYPE_IPV6/ether_types.ETH_TYPE_IP
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
         match = parser.OFPMatch(in_port=in_port,eth_type=IPVx,ip_dscp=dscp)
-        instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, ofp.OFPActionMeter(meter_id=meter_id)),parser.OFPInstructionGotoTable(1)]
-        msg = parser.OFPFlowMod(datapath=datapath,
+        action=[parser.OFPActionMeter(meter_id=meter_id)]
+        instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action), parser.OFPInstructionGotoTable(1)]
+        
+        mod = parser.OFPFlowMod(datapath=datapath,
                                 priority=1,
                                 command=ofp.OFPFC_ADD,
                                 match=match,
                                 instructions=instruction
                                 )
-        datapath.send_msg(msg)
-    def control_and_except(self,datapath,ether_type=None,ip_proto=None,icmpv6_type=None):
+        self._send_ADD_FlowMod(datapath,mod)
+    def control_and_except(self,datapath,**kwargs):
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
-        match = parser.OFPMatch(eth_type=ether_type,ip_proto=ip_proto,icmpv6_type=icmpv6_type)
+        match = parser.OFPMatch(**kwargs)
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)] 
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
-        msg = parser.OFPFlowMod(datapath=datapath, priority=65535,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst)
-        datapath.send_msg(msg)
+        mod = parser.OFPFlowMod(datapath=datapath, priority=65535,
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=1,flags=ofp.OFPFF_SEND_FLOW_REM)
+        self._send_ADD_FlowMod(datapath,mod)
         
     # !SECTION
     # SECTION Meter Modification Message Modifications
@@ -850,7 +867,7 @@ class RinformanceRoute(app_manager.RyuApp):
         msg = ev.msg
         dp = msg.datapath
         ofp = dp.ofproto
-
+        
         if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
         elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
@@ -861,20 +878,14 @@ class RinformanceRoute(app_manager.RyuApp):
             reason = 'GROUP DELETE'
         else:
             reason = 'unknown'
-
-        """
-        self.logger.debug('OFPFlowRemoved received: '
-                        'cookie=%d priority=%d reason=%s table_id=%d '
-                        'duration_sec=%d duration_nsec=%d '
-                        'idle_timeout=%d hard_timeout=%d '
-                        'packet_count=%d byte_count=%d match.fields=%s',
-                        msg.cookie, msg.priority, reason, msg.table_id,
-                        msg.duration_sec, msg.duration_nsec,
-                        msg.idle_timeout, msg.hard_timeout,
-                        msg.packet_count, msg.byte_count, msg.match)
-    """
+        """print('OFPFlowRemoved received: '
+                      'table_id=%d reason=%s priority=%d '
+                      'idle_timeout=%d hard_timeout=%d cookie=%d '
+                      'match=%s stats=%s',
+                      msg.table_id, reason, msg.priority,
+                      msg.idle_timeout, msg.hard_timeout, msg.cookie,
+                      msg.match, msg.stats)"""
     # !SECTION
-
     # SECTION OFPT_PORT_STATUS
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
@@ -884,10 +895,8 @@ class RinformanceRoute(app_manager.RyuApp):
         ofp_port_state = msg.desc.state
         data = dict_tool.class2dict(msg.desc)
         data["update_time"] = time.time()
-        print(data)
-
+        #print(data)
         self.G.nodes[(datapath.id,None)]["port"][msg.desc.port_no]["OFPMP_PORT_DESC"] = data
-
         if msg.reason == ofp.OFPPR_ADD:
             """ADD"""
             pass
@@ -912,8 +921,6 @@ class RinformanceRoute(app_manager.RyuApp):
             # OFPPS_LIVE = 4, /* Live for Fast Failover Group. */
             #data["state"] = self.OpEPS
             self.G.nodes[(datapath.id,None)]["port"][msg.desc.port_no]["OFPMP_PORT_DESC"] = data
-
-           
         elif msg.reason == ofp.OFPPR_MODIFY:
             """MODIFY"""
             if ofp_port_state == ofp.OFPPS_LINK_DOWN:
@@ -953,14 +960,11 @@ class RinformanceRoute(app_manager.RyuApp):
         if pkt_ethernet:
             if pkt_ethernet.ethertype == self.OpELD_EtherType:
                 # print("get",self.decode_eth_1105(pkt_ethernet.dst,pkt_ethernet.src))
-
                 seq = int.from_bytes(msg.data[14:16], "big")
                 self.handle_opeld(datapath, port, pkt_ethernet, seq)
-
         else:
             # TODO LOG ERROR
             return
-
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_icmp:
             pass
@@ -976,8 +980,9 @@ class RinformanceRoute(app_manager.RyuApp):
         if pkt_ipv4:
             self.handle_route(datapath, port, pkt_ipv4)
     def handle_route(self,datapath, port, pkt_ipv4):
-        pkt_ipv4.dst_ip
-        nx.shortest_path(self.G,(datapath.id,port),(2,None),weight="weight")
+        #print(datapath, port, pkt_ipv4)
+        a=nx.shortest_path(self.G,(datapath.id,port),(2,None),weight="weight2")
+        #print(a)
         pass
 
     def handle_arp(self, datapath, pkt_arp, in_port,packet):
@@ -1035,14 +1040,11 @@ class RinformanceRoute(app_manager.RyuApp):
             pkt_opeld.dst, pkt_opeld.src)
         end_switch = datapath.id
         end_port = port
-
         start_node_id=(start_switch,start_port)
         end_node_id=(end_switch,end_port)
-        
         # NOTE Topology setting
         if not self.G.has_edge(start_node_id, end_node_id):
             init_edge(start_node_id ,end_node_id)
-         
         # NOTE Link Detect
         # Link delay
         # http://www.cnsm-conf.org/2013/documents/papers/CNSM/p122-phemius.pdf
@@ -1152,8 +1154,8 @@ class RinformanceRoute(app_manager.RyuApp):
     def error_msg_handler(self, ev):
         msg = ev.msg
 
-        print('OFPErrorMsg received: type=0x%02x code=0x%02x message=%s',
-              msg.type, msg.code, (msg.data))
+        """print('OFPErrorMsg received: type=0x%02x code=0x%02x message=%s',
+              msg.type, msg.code, (msg.data))"""
 
     # FIXME : ryu-manager using ,this function is implement by echo,if switch not reply echo,switch will close
 
