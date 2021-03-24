@@ -688,7 +688,7 @@ class RinformanceRoute(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)] 
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=65535,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=1,flags=ofp.OFPFF_SEND_FLOW_REM)
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0,flags=ofp.OFPFF_SEND_FLOW_REM)
         self._send_ADD_FlowMod(datapath,mod)
         
     # !SECTION
