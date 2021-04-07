@@ -19,14 +19,14 @@ def myNetwork():
 
     info('*** Adding controller\n')
     c0 = net.addController(name='c0',
-                           controller=Controller,
+                           controller=RemoteController,
                            protocol='tcp',
                            port=6633)
 
     info('*** Add switches\n')
-    #s2 = net.addSwitch('s2', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.3")
+    s2 = net.addSwitch('s2', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.3")
     s1 = net.addSwitch('s1', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.4")
-     
+    print("ssss")
     #s2.cmd('sudo ethtool -s s2-eth1 speed 100')
     info('*** Add hosts\n')
     h1 = net.addHost('h1', cls=Host, ip='10.0.0.1', defaultRoute="via 140.128.102.174")
@@ -36,7 +36,8 @@ def myNetwork():
     info('*** Add links\n')
     #https://github.com/mininet/mininet/blob/de28f67a97fc8915cc1586c984465d89a016d8eb/mininet/link.py#L314
     net.addLink(s1, h1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
-    net.addLink(h2, s1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
+    net.addLink(h2, s2,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
+    net.addLink(s1, s2,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
     #mininet 的delay,jitter,loss底層是依靠netem(Network Emulation)模擬
     #由於mininet底層呼叫netem時沒有設定jitter的分佈狀態,所以netem依照默認設定是normal(常態分佈)
     #https://git.kernel.org/pub/scm/network/iproute2/iproute2.git/tree/man/man8/tc-netem.8#n89
@@ -72,6 +73,7 @@ def myNetwork():
     info('*** Starting switches\n')
     #net.get('s2').start([c0])
     net.get('s1').start([c0])
+    net.get('s2').start([c0])
 
     info('*** Post configure switches and hosts\n')
     #net.pingAll(0.1)

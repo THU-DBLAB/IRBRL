@@ -46,11 +46,19 @@ class RinformanceRoute(app_manager.RyuApp):
         self.OpEQW_EtherType = 0x5157 # Openflow Extend QoS Weight
         #handle_arp
         self.ARP_SEND_FROM_CONTROLLER=b'\xff\11'#(bytes)
+        # https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml
+        # REQUEST = 1
+        # REPLY   = 2
+        self.ARP_request = 1
+        self.ARP_reply = 2
+
         # self.echo_latency[ev.msg.datapath.id] Detect controller --one way---> switch latency
         self.echo_latency = {}
         # self.OpELD_start_time[datapath.id][out_port]
         self.OpELD_start_time = nested_dict()
         self.ARP_Table = {}  # for more hight speed
+        self.ip_get_datapathid_port = nested_dict() #
+
         # self.G.nodes[datapath.id]["port"][in_port]["host"] can get the same data but self.G.nodes
         # NOTE can recognize if OpenVswitch is Edge Switch or not
 
@@ -71,8 +79,8 @@ class RinformanceRoute(app_manager.RyuApp):
 
         # NOTE Text-based user interface(tui)
         #if CONF.RR.TUI:
-        self._run_tui_htread = hub.spawn(self._run_tui)
-        self._update_tui_htread = hub.spawn(self._update_tui)
+        #self._run_tui_htread = hub.spawn(self._run_tui)
+        #self._update_tui_htread = hub.spawn(self._update_tui)
 
         # NOTE self.G = nx.DiGraph() Design
 
@@ -122,9 +130,9 @@ class RinformanceRoute(app_manager.RyuApp):
                                             |["all_port_duration_s"]=<class 'int'>
                                             #temp when del the port, a new port restart,    #OFPMP_PORT_STATS's duration_sec will be zero
                                             |["all_port_duration_s_temp"]=<class 'int'>
-                                            |["FLOW_TABLE"]={
+                                            |["FLOW_TABLE"][$table_id<class 'int'>][$priority<class 'int'>][$match<class 'str'>]=<class 'ryu.ofproto.ofproto_v1_5_parser.OFPFlowMod'>
 
-                                            }
+                                           
         """
         # NOTE EDGES STRUCT SPEC
         # Support Link Aggregation
@@ -280,6 +288,7 @@ class RinformanceRoute(app_manager.RyuApp):
                             # from a to b ,just one way ,millisecond
                             self.G[edge_id1][edge_id2]["detect"]["latency_ms"] = delay_one_packet
                             self.G[edge_id1][edge_id2]["weight"] = formula.OSPF(bw*8)
+                            self.G[edge_id1][edge_id2]["EIGRP"] = formula.EIGRP((bw*8)/1000,curr_speed,tx_bytes_delta,delay_one_packet,loss)
                             
                             from itertools import islice
                                 
@@ -335,7 +344,6 @@ class RinformanceRoute(app_manager.RyuApp):
                     line = "all_port_duration_s " + \
                         str(self.G.nodes[node_id]["all_port_duration_s"])
                     self.TUI_Mapping[Mapping_idx] = line
-
                     """
                     'duration_sec': 26664, 'duration_nsec': 862000000, 'rx_packets': 22, 'tx_packets': 19
                     5, 'rx_bytes': 1636, 'tx_bytes': 12016, 'rx_dropped': 0, 'tx_dropped': 0, 'rx_errors': 0, 'tx_errors': 0
@@ -343,7 +351,14 @@ class RinformanceRoute(app_manager.RyuApp):
                     Mapping_idx += 1
                     self.TUI_Mapping[Mapping_idx] = ""
                     Mapping_idx += 1
-
+                    self.TUI_Mapping[Mapping_idx] = "Show Flow Entry"
+                    Mapping_idx += 1
+                    for table_id in self.G.nodes[node_id]["FLOW_TABLE"]:
+                        for priority in self.G.nodes[node_id]["FLOW_TABLE"][table_id]:
+                            for match in self.G.nodes[node_id]["FLOW_TABLE"][table_id][priority]:
+                                self.TUI_Mapping[Mapping_idx] = "table_id: "+str(table_id)+" priority: "+str(priority)+" match: "+str(match)
+                                Mapping_idx += 1
+                    
             self.TUI_Mapping[Mapping_idx] = "Topology Link"
             Mapping_idx += 1
             # self.TUI_Mapping[Mapping_idx]=str(self.G.edges())
@@ -383,7 +398,10 @@ class RinformanceRoute(app_manager.RyuApp):
     #            self.G[start_switch][end_switch]["detect"][link_index]["bandwidth_bytes_per_s"]=bw#
      #           self.G[start_switch][end_switch]["detect"][link_index]["latency_ms"]=delay_one_packet#from a to b ,just one way ,millisecond
       #          self.G[start_switch][end_switch]["weight"]=formula.OSPF(bw*8)
+            
 
+
+            
             for i in range(30):
                 self.TUI_Mapping[Mapping_idx] = ""
                 Mapping_idx += 1
@@ -426,11 +444,12 @@ class RinformanceRoute(app_manager.RyuApp):
             self.control_and_except(datapath,eth_type=self.OpEQW_EtherType)
             self.control_and_except(datapath,eth_type=ether_types.ETH_TYPE_ARP)
             self.control_and_except(datapath,eth_type=ether_types.ETH_TYPE_IPV6,ip_proto=in_proto.IPPROTO_ICMPV6,icmpv6_type=icmpv6.ND_NEIGHBOR_SOLICIT)
-            
+            self.add_all_flow_to_table(datapath,0,1)
         def set_flow_table_1():
             
             self.add_all_flow_to_table(datapath,1,2)
-         
+        def set_flow_table_2():
+            self.unknow_route_ask_controller(datapath)
         msg = ev.msg
         datapath = msg.datapath
         self.send_port_desc_stats_request(datapath)
@@ -439,6 +458,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
         set_flow_table_0_control_and_except()
         set_flow_table_1()
+        set_flow_table_2()
     # NOTE init G nodes
 
 
@@ -538,6 +558,7 @@ class RinformanceRoute(app_manager.RyuApp):
                  
                 percent= rate_per/10 #40%~100%
                 self.add_meter(datapath,meter_id,int(percent*curr_speed))
+       
         def set_flow_table_0_DSCP(inport_num):
                 #datapath,dscp,IPVx,table_id,meter_id
                 #dscp:
@@ -612,17 +633,31 @@ class RinformanceRoute(app_manager.RyuApp):
     
     """
     mod type is  <class 'ryu.ofproto.ofproto_v1_5_parser.OFPFlowMod'>
-    
+
     mod.__dict__ can get this 
     {'datapath': <ryu.controller.controller.Datapath object at 0x7f6f7bf78b10>, 'version': None, 'msg_type': None, 'msg_len': None, 'xid': None, 'buf': None, 'cookie': 0, 'cookie_mask': 0, 'table_id': 0, 'command': 0, 'idle_timeout': 0, 'hard_timeout': 0, 'priority': 1, 'buffer_id': 4294967295, 'out_port': 0, 'out_group': 0, 'flags': 0, 'importance': 0, 'match': OFPMatch(oxm_fields={'in_port': 321, 'eth_type': 34525, 'ip_dscp': 40}), 'instructions': [OFPInstructionActions(actions=[OFPActionMeter(len=8,meter_id=82181,type=29)],type=4), OFPInstructionGotoTable(len=8,table_id=1,type=1)]}
+    
+    兩個flow entry同match,table id,priority代表重疊
+    Two flow entries overlap if a single packet may match both, and both flow entries have the same priority-(6.4 Flow Table Modification Messages)
+
     """
-    def _send_ADD_FlowMod(self,datapath,mod,identify_route=None):
+
+    def _send_ADD_FlowMod(self,mod):
+        datapath=mod.datapath
         OFPFlowMod=mod.__dict__ 
         table_id=OFPFlowMod["table_id"]
-        #match=OFPFlowMod["match"]
+        match=OFPFlowMod["match"]
         priority=OFPFlowMod["priority"]
-        self.G.nodes[(datapath.id,None)]["FLOW_TABLE"][table_id][priority][mod]=identify_route
+        ofp = datapath.ofproto
+        #要交換機當flow entry被刪除都要通知控制器
+        mod.flags=ofp.OFPFF_SEND_FLOW_REM
+        #if self._check_no_overlap_on_server(datapath.id,table_id,priority,match):
+        self.G.nodes[(datapath.id,None)]["FLOW_TABLE"][table_id][priority][str(match)]=mod
         datapath.send_msg(mod)
+        #    return True
+        return False
+    def _check_no_overlap_on_server(self,datapath_id,table_id,priority,match):
+        return  True if len(self.G.nodes[(datapath_id,None)]["FLOW_TABLE"][table_id][priority][str(match)])==0 else False
         
      
 
@@ -634,7 +669,7 @@ class RinformanceRoute(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, table_id=from_table_id,priority=0,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
         
-        self._send_ADD_FlowMod(datapath,mod)
+        self._send_ADD_FlowMod(mod)
 
     def drop_all(self, datapath):
         ofp = datapath.ofproto
@@ -650,7 +685,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                 match=match,
                                 instructions=instruction
                                 )
-        self._send_ADD_FlowMod(datapath,mod)
+        self._send_ADD_FlowMod(mod)
 
     def add_lldp_flow(self, datapath):
         ofp = datapath.ofproto
@@ -665,7 +700,7 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
-        self._send_ADD_FlowMod(datapath,mod)
+        self._send_ADD_FlowMod(mod)
     def DSCP_flow(self,datapath,in_port,dscp,IPVx,table_id,meter_id):
         #IPVx=ether_types.ETH_TYPE_IPV6/ether_types.ETH_TYPE_IP
         ofp = datapath.ofproto
@@ -678,9 +713,19 @@ class RinformanceRoute(app_manager.RyuApp):
                                 priority=1,
                                 command=ofp.OFPFC_ADD,
                                 match=match,
-                                instructions=instruction
+                                instructions=instruction,hard_timeout=3
                                 )
-        self._send_ADD_FlowMod(datapath,mod)
+        self._send_ADD_FlowMod(mod)
+    def unknow_route_ask_controller(self,datapath):
+        ofp = datapath.ofproto
+        parser = datapath.ofproto_parser
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)] 
+        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=0,table_id=2,
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0)
+        self._send_ADD_FlowMod(mod)
+
     def control_and_except(self,datapath,**kwargs):
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -688,8 +733,8 @@ class RinformanceRoute(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)] 
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=65535,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0,flags=ofp.OFPFF_SEND_FLOW_REM)
-        self._send_ADD_FlowMod(datapath,mod)
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0)
+        self._send_ADD_FlowMod(mod)
         
     # !SECTION
     # SECTION Meter Modification Message Modifications
@@ -787,10 +832,11 @@ class RinformanceRoute(app_manager.RyuApp):
     # NOTE send_arp_packet
 
 
-    def send_arp_packet(self, datapath, in_port, out_port,eth_src_mac,eth_dst_mac, arp_opcode, arp_src_mac, arp_src_ip, arp_dst_mac, arp_dst_ip,payload):
+    def send_arp_packet(self, datapath, out_port,eth_src_mac,eth_dst_mac, arp_opcode, arp_src_mac, arp_src_ip, arp_dst_mac, arp_dst_ip,payload):
         """opcode:1 request"""
         """opcode:2 reply"""
         ofp = datapath.ofproto
+        in_port=ofp.OFPP_CONTROLLER
         parser = datapath.ofproto_parser
         pkt = packet.Packet()
         pkt.add_protocol(ethernet.ethernet(
@@ -867,7 +913,13 @@ class RinformanceRoute(app_manager.RyuApp):
         msg = ev.msg
         dp = msg.datapath
         ofp = dp.ofproto
-        
+        #print(type(msg.match))
+        #print(self.G.nodes[(int(dp.id),None)]["FLOW_TABLE"])
+        try:
+            del self.G.nodes[(dp.id,None)]["FLOW_TABLE"][int(msg.table_id)][int(msg.priority)][str(msg.match)]
+        except:
+            return
+            pass
         if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
         elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
@@ -965,12 +1017,15 @@ class RinformanceRoute(app_manager.RyuApp):
         else:
             # TODO LOG ERROR
             return
+
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_icmp:
+            print("icmp!!!")
             pass
 
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp:
+            #print("問")
             self.handle_arp(datapath, pkt_arp, port,msg.data)
 
         pkt_lldp = pkt.get_protocol(lldp.lldp)
@@ -978,48 +1033,118 @@ class RinformanceRoute(app_manager.RyuApp):
             self.handle_lldp(datapath, port, pkt_ethernet, pkt_lldp)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
         if pkt_ipv4:
-            self.handle_route(datapath, port, pkt_ipv4)
-    def handle_route(self,datapath, port, pkt_ipv4):
-        #print(datapath, port, pkt_ipv4)
-        a=nx.shortest_path(self.G,(datapath.id,port),(2,None),weight="weight2")
-        #print(a)
-        pass
+            print("想陸游")
+            #交換機想要透過ipv4路由但不知道路,我們需要幫它
+            self.handle_route(datapath, port, pkt_ipv4,msg.data)
 
+    def handle_route(self,datapath, port, pkt_ipv4,data):
+         
+        if self.ip_get_datapathid_port[pkt_ipv4.dst]=={}:
+            self._arp_request_all(pkt_ipv4.dst)
+            #FIXME 這裡要注意迴圈引發問題
+            while self.ip_get_datapathid_port[pkt_ipv4.dst]=={}:
+                pass
+
+
+        if self.ip_get_datapathid_port[pkt_ipv4.dst]!={}:#確保知道目的地在哪裡
+            dst_datapath_id=self.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
+            dst_port=self.ip_get_datapathid_port[pkt_ipv4.dst]["port"]
+            #選出單一路徑
+            #去
+            alog="weight"#EIGRP
+            route_path_go=nx.shortest_path(self.G,(datapath.id,port),(dst_datapath_id,dst_port),weight=alog)
+            self.setting_route_path(route_path_go,pkt_ipv4.dst)
+            #回
+            route_path_back=nx.shortest_path(self.G,(dst_datapath_id,dst_port),(datapath.id,port),weight=alog)
+            self.setting_route_path(route_path_back,pkt_ipv4.src)
+            #上面只是規劃好路徑 這裡要幫 上來控制器詢問的`迷途小封包` 指引,防止等待rto等等...
+            #你可以測試下面刪除會導致每次pingall都要等待
+            ofp = datapath.ofproto
+            parser = datapath.ofproto_parser
+            match = datapath.ofproto_parser.OFPMatch(in_port=port)
+            out_port=route_path_go[2][1]
+            actions = [parser.OFPActionOutput(port=out_port)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                    match=match, actions=actions, data=data)
+            datapath.send_msg(out)
+    #被動模塊
+    def handle_route_v2(self,datapath, port, pkt_ipv4,data):
+         
+        #print(datapath, port, pkt_ipv4,self.ip_get_datapathid_port[pkt_ipv4.dst])
+        if self.ip_get_datapathid_port[pkt_ipv4.dst]!={}:#確保知道目的地在哪裡
+            dst_datapath_id=self.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
+            dst_port=self.ip_get_datapathid_port[pkt_ipv4.dst]["port"]
+            #選出單一路徑
+            #去
+            alog="weight"#EIGRP
+            route_path_go=nx.shortest_path(self.G,(datapath.id,port),(dst_datapath_id,dst_port),weight=alog)
+            self.setting_route_path(route_path_go,pkt_ipv4.dst)
+            #回
+            route_path_back=nx.shortest_path(self.G,(dst_datapath_id,dst_port),(datapath.id,port),weight=alog)
+            self.setting_route_path(route_path_back,pkt_ipv4.src)
+            #上面只是規劃好路徑 這裡要幫 上來控制器詢問的`迷途小封包` 指引,防止等待rto等等...
+            #你可以測試下面刪除會導致每次pingall都要等待
+            ofp = datapath.ofproto
+            parser = datapath.ofproto_parser
+            match = datapath.ofproto_parser.OFPMatch(in_port=port)
+            out_port=route_path_go[2][1]
+            actions = [parser.OFPActionOutput(port=out_port)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                    match=match, actions=actions, data=data)
+            datapath.send_msg(out)
+            #                       route_path[2::3]
+            #[(1, 1), (1, None), (1, 2), (2, 2), (2, None), (2, 1)]
+            #                     ^^^^                       ^^^^
+             
+            #多路徑k sort path
+            #islice(nx.shortest_simple_paths(self.G, (1,None), (2,None), weight="weight"), 2)
+
+    def _arp_request_all(self,dst_ip):
+        for node_id in self.G.nodes:
+            if self.check_node_is_switch(node_id):
+                switch_data = self.G.nodes[node_id]
+                for port_no in switch_data["port"].keys():
+                    # if the port can working
+                    print("問")
+                    if switch_data["port"][port_no]["OFPMP_PORT_DESC"]["state"] == ofproto_v1_5.OFPPS_LIVE: 
+                        print(node_id,port_no)
+                        #arp_src_ip="0.0.0.0"這種是ARP probe型態的封包
+                        #An ARP Probe with an all-zero 'sender IP address' -rfc5227 [Page 6]
+                        self.send_arp_packet(datapath=switch_data["datapath"], out_port=port_no,eth_src_mac='00:00:00:00:00:00',eth_dst_mac="ff:ff:ff:ff:ff:ff", arp_opcode=self.ARP_request,
+                                arp_src_mac='00:00:00:00:00:00', arp_src_ip="0.0.0.0", arp_dst_mac='00:00:00:00:00:00', arp_dst_ip=dst_ip,payload=self.ARP_SEND_FROM_CONTROLLER)
+            
+        
     def handle_arp(self, datapath, pkt_arp, in_port,packet):
+        def update_fome_arp_data(datapath,pkt_arp,in_port):
+
+            self.G.nodes[(datapath.id,None)]["port"][in_port]["host"][pkt_arp.src_ip] = pkt_arp.src_mac
+            self.ARP_Table[pkt_arp.src_ip] = pkt_arp.src_mac
+            self.ip_get_datapathid_port[pkt_arp.src_ip]["datapath_id"]=datapath.id
+            self.ip_get_datapathid_port[pkt_arp.src_ip]["port"]=in_port
+
+        #避免廣播風暴
         last_two_bytes=packet[-2:]
         #reject and do not process the arp packet ask from controller
         if last_two_bytes==self.ARP_SEND_FROM_CONTROLLER:
             return
 
         ofp = datapath.ofproto
-        # https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml
-        # REQUEST = 1
-        # REPLY   = 2
-        ARP_request = 1
-        ARP_reply = 2
+         
         if in_port < ofp.OFPP_MAX:
-            if pkt_arp.opcode == ARP_request:
-                self.G.nodes[(datapath.id,None)]["port"][in_port]["host"][pkt_arp.src_ip] = pkt_arp.src_mac
-                self.ARP_Table[pkt_arp.src_ip] = pkt_arp.src_mac
-
-                
+            if pkt_arp.opcode == self.ARP_request:
+                update_fome_arp_data(datapath,pkt_arp,in_port)
                 if pkt_arp.dst_ip in self.ARP_Table:
-                    self.send_arp_packet(datapath=datapath, in_port=ofp.OFPP_CONTROLLER, out_port=in_port,eth_src_mac=self.ARP_Table[pkt_arp.dst_ip],eth_dst_mac=pkt_arp.src_mac, arp_opcode=ARP_reply,
+                    self.send_arp_packet(datapath=datapath, out_port=in_port,eth_src_mac=self.ARP_Table[pkt_arp.dst_ip],eth_dst_mac=pkt_arp.src_mac, arp_opcode=self.ARP_reply,
                                          arp_src_mac=self.ARP_Table[pkt_arp.dst_ip], arp_src_ip=pkt_arp.dst_ip, arp_dst_mac=pkt_arp.src_mac, arp_dst_ip=pkt_arp.src_ip,payload=self.ARP_SEND_FROM_CONTROLLER)
                 else:
                     #TODO : send to all switch all port to check!
-                    for node_id in self.G.nodes:
-                        if self.check_node_is_switch(node_id):
-                            switch_data = self.G.nodes[node_id]
-                            for port_no in switch_data["port"].keys():
-                                # if the port can working
-                                if switch_data["port"][port_no]["OFPMP_PORT_DESC"]["state"] == ofproto_v1_5.OFPPS_LIVE: 
-                                    self.send_arp_packet(datapath=switch_data["datapath"], in_port=ofp.OFPP_CONTROLLER, out_port=port_no,eth_src_mac=pkt_arp.src_mac,eth_dst_mac="ff:ff:ff:ff:ff:ff", arp_opcode=ARP_request,
-                                         arp_src_mac=pkt_arp.src_mac, arp_src_ip=pkt_arp.src_ip, arp_dst_mac=pkt_arp.dst_mac, arp_dst_ip=pkt_arp.dst_ip,payload=self.ARP_SEND_FROM_CONTROLLER)
+                    self._arp_request_all(pkt_arp.dst_ip)     
                     pass
-            elif pkt_arp.opcode == ARP_reply:
-                self.G.nodes[(datapath.id,None)]["port"][in_port]["host"][pkt_arp.src_ip] = pkt_arp.src_mac
-                self.ARP_Table[pkt_arp.src_ip] = pkt_arp.src_mac
+            elif pkt_arp.opcode == self.ARP_reply:
+                print("回答")
+                print(pkt_arp)
+                update_fome_arp_data(datapath,pkt_arp,in_port)
+                 
             else:
                 # TODO HADLE EXPECTION
                 pass
@@ -1030,6 +1155,7 @@ class RinformanceRoute(app_manager.RyuApp):
     def handle_opeld(self, datapath, port, pkt_opeld, seq):
         # NOTE Topology maintain
         def init_edge(start_node_id, end_node_id):
+            print(start_node_id, end_node_id)
             self.G.add_edge(start_node_id, end_node_id)
             self.G[start_node_id][end_node_id]["tmp"] = nested_dict()
             self.G[start_node_id][end_node_id]["detect"] = nested_dict()
@@ -1173,9 +1299,53 @@ class RinformanceRoute(app_manager.RyuApp):
     # !SECTION
 
 
-# SECTION Route Module
 
-    def set_path(self,path):
-        pass
-    
+     
+#print(nx.shortest_path(self.G,(1,None),(2,None),weight="weight"),nx.shortest_path_length(self.G,(1,None),(2,None),weight="weight"))
+#try:
+    #print(list(islice(nx.shortest_simple_paths(self.G, (1,None), (2,None), weight="weight"), 2)))
+#except:
+#   pass
+# SECTION Route Module
+    def setting_route_path(self,route_path,dst):
+        for i in route_path[2::3]:
+            set_datapath_id=i[0]
+            set_out_port=i[1]
+            tmp_datapath=self.G.nodes[(set_datapath_id,None)]["datapath"]
+            ofp = tmp_datapath.ofproto
+            parser = tmp_datapath.ofproto_parser
+            match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,ipv4_dst=dst)
+            action = [parser.OFPActionOutput(port=set_out_port)]
+            instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action)]
+            mod = parser.OFPFlowMod(datapath=tmp_datapath,
+                                    priority=1,table_id=2,
+                                    command=ofp.OFPFC_ADD,
+                                    match=match,
+                                    instructions=instruction,idle_timeout=10
+                                    )
+            self._send_ADD_FlowMod(mod)
+
+
+    def active_route(self):
+        if self.ip_get_datapathid_port[pkt_ipv4.dst]!={}:#確保知道目的地在哪裡
+            dst_datapath_id=self.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
+            dst_port=self.ip_get_datapathid_port[pkt_ipv4.dst]["port"]
+            #選出單一路徑
+            #去
+            alog="weight"#EIGRP
+            route_path_go=nx.shortest_path(self.G,(datapath.id,port),(dst_datapath_id,dst_port),weight=alog)
+            self.setting_route_path(route_path_go,pkt_ipv4.dst)
+            #回
+            route_path_back=nx.shortest_path(self.G,(dst_datapath_id,dst_port),(datapath.id,port),weight=alog)
+            self.setting_route_path(route_path_back,pkt_ipv4.src)
+            #上面只是規劃好路徑 這裡要幫 上來控制器詢問的`迷途小封包` 指引,防止等待rto等等...
+            #你可以測試下面刪除會導致每次pingall都要等待
+            ofp = datapath.ofproto
+            parser = datapath.ofproto_parser
+            match = datapath.ofproto_parser.OFPMatch(in_port=port)
+            out_port=route_path_go[2][1]
+            actions = [parser.OFPActionOutput(port=out_port)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                    match=match, actions=actions, data=data)
+            datapath.send_msg(out)
 # !SECTION  
