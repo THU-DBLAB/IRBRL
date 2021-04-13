@@ -77,8 +77,7 @@ from mininet.topolib import TreeTopo
 
 info( 'MiniEdit running against Mininet '+VERSION, '\n' )
 MININET_VERSION = re.sub(r'[^\d\.]', '', VERSION)
-if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
-    from mininet.node import IVSSwitch
+ 
 
 TOPODEF = 'none'
 TOPOS = { 'minimal': lambda: SingleSwitchTopo( k=2 ),
@@ -1707,8 +1706,8 @@ class MiniEdit( Frame ):
             f.write("from mininet.node import Controller, RemoteController, OVSController\n")
             f.write("from mininet.node import CPULimitedHost, Host, Node\n")
             f.write("from mininet.node import OVSKernelSwitch, UserSwitch\n")
-            if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
-                f.write("from mininet.node import IVSSwitch\n")
+            #if StrictVersion(MININET_VERSION) > StrictVersion('2.0'):
+            #    f.write("from mininet.node import IVSSwitch\n")
             f.write("from mininet.cli import CLI\n")
             f.write("from mininet.log import setLogLevel, info\n")
             f.write("from mininet.link import TCLink, Intf\n")

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/python
 
 from mininet.net import Mininet
@@ -9,20 +10,15 @@ from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 from mininet.link import TCLink, Intf
 from subprocess import call
-
-
 def myNetwork():
-
     net = Mininet(topo=None,
                   build=False,
                   ipBase='10.0.0.0/8')
-
     info('*** Adding controller\n')
     c0 = net.addController(name='c0',
                            controller=RemoteController,
                            protocol='tcp',
-                           port=6633)
-
+                           port=6653)
     info('*** Add switches\n')
     s2 = net.addSwitch('s2', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.3")
     s1 = net.addSwitch('s1', cls=OVSKernelSwitch,protocols='OpenFlow15',ip="10.0.0.4")
@@ -35,7 +31,7 @@ def myNetwork():
     delay="100ms"
     info('*** Add links\n')
     #https://github.com/mininet/mininet/blob/de28f67a97fc8915cc1586c984465d89a016d8eb/mininet/link.py#L314
-    net.addLink(s1, h1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
+    net.addLink(s1, h1,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=10,max_queue_size=10000000)
     net.addLink(h2, s2,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
     net.addLink(s1, s2,cls=TCLink, bw=1000,jitter="0ms",delay="10ms",loss=0,max_queue_size=10000000)
     #mininet 的delay,jitter,loss底層是依靠netem(Network Emulation)模擬
@@ -54,7 +50,6 @@ def myNetwork():
     #a.cmd("sudo ethtool -s s1-eth1 speed 100")
     #a.cmd("sudo ethtool -s s2-eth1 speed 100")
     
-   
     info('*** Starting network\n')
     net.build()
     ##
