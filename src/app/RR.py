@@ -52,13 +52,12 @@ class RinformanceRoute(app_manager.RyuApp):
         for request in range(10):
             print("Sending request %s …" % request)
             socket.send(b"Hello")
-
             #  Get the reply.
             message = socket.recv()
             print("Received reply %s [ %s ]" % (request, message))
-
         print("請等拓樸探索完畢")
-        self.sem = hub.Semaphore(1)
+        self.sem = hub.Semaphore(1)#確保每次拿 get_cookie 只能有一個人進入critical section~
+        self.barrier_lock={}#
         # run app_manager.RyuApp oject's __init__()
         super(RinformanceRoute, self).__init__(*args, **kwargs)
         self.MTU = 1500
@@ -68,12 +67,14 @@ class RinformanceRoute(app_manager.RyuApp):
         self.OpEQW_EtherType = 0x5157  # Openflow Extend QoS Weight
         #network slicing
         self.MultiPath_Slicing_EtherType = ether_types.ETH_TYPE_8021Q# 這個可以改? 好想自己客製化vlan tag,實驗起來不給我改QQ openvswitch小氣
-
-
-        self.cookie = 0  # 每條路線都有一個唯一cookie, flow entry的cookie與group_id共用此數字 所以最大值為2^32-1=4294967295
-
+        """
+        # 從1開始,0代表沒有設定cookie
+        # 每次規劃出來路線(不管single or multipath)都有一個唯一cookie去代表那次的設定
+        # 該cookie數值會用在flow entry的cookie與group_id共用此數字 所以最大值為2^32-1=4294967295
+        # FIXME 需要完成 self.cookie回收機制
+        """
+        self.cookie = 1  
         # 處理統計路線
-
         # handle_arp
         self.ARP_SEND_FROM_CONTROLLER = b'\xff\11'  # (bytes)
         # https://www.iana.org/assignments/arp-parameters/arp-parameters.xhtml
@@ -101,12 +102,10 @@ class RinformanceRoute(app_manager.RyuApp):
         self.mac_get_datapathid_port = nested_dict()
         # self.G.nodes[datapath.id]["port"][in_port]["host"] can get the same data but self.G.nodes
         # NOTE can recognize if OpenVswitch is Edge Switch or not
-
         # The space of the TUI,for draw data
         self.TUI_Mapping = []
         # init networkx
         self.G = nx.DiGraph()  # 因為網路是全雙工所以需要有向圖表達
-
         # NOTE Start Green Thread
         self._handle_route_thread = []
 
@@ -1019,13 +1018,18 @@ class RinformanceRoute(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def _flow_removed_handler(self, ev):
         msg = ev.msg
-        dp = msg.datapath
-        ofp = dp.ofproto
+        datapath = msg.datapath
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
         # print(type(msg.match))
         # print(self.G.nodes[(int(dp.id),None)]["FLOW_TABLE"])
         try:
-            del self.G.nodes[(dp.id, None)]["FLOW_TABLE"][int(
+            del self.G.nodes[(datapath.id, None)]["FLOW_TABLE"][int(
                 msg.table_id)][int(msg.priority)][str(msg.match)]
+            #msg.cookie
+            print(msg.cookie,"刪除")
+            mod = ofp_parser.OFPGroupMod(datapath, command=ofp.OFPGC_DELETE,group_id=msg.cookie)
+            datapath.send_msg(mod)
         except:
             return
             pass
@@ -1132,7 +1136,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
         pkt_icmp = pkt.get_protocol(icmp.icmp)
         if pkt_icmp:
-            print("icmp!!!")
+            #print("icmp!!!")
             pass
         pkt_arp = pkt.get_protocol(arp.arp)
         if pkt_arp:
@@ -1160,7 +1164,7 @@ class RinformanceRoute(app_manager.RyuApp):
     # 處理統計路徑 延遲等等 評估此設定好不好
 
     def _handle_package_analysis(self, ev):
-        print("收到完成")
+         
         msg = ev.msg
         datapath = msg.datapath
         pkt = packet.Packet(data=msg.data)
@@ -1262,8 +1266,7 @@ class RinformanceRoute(app_manager.RyuApp):
                     self._arp_request_all(pkt_arp.dst_ip)
                     pass
             elif pkt_arp.opcode == self.ARP_reply:
-                print("回答")
-                print(pkt_arp)
+                
                 update_fome_arp_data(datapath, pkt_arp, in_port)
 
             else:
@@ -1276,7 +1279,7 @@ class RinformanceRoute(app_manager.RyuApp):
     def handle_opeld(self, datapath, port, pkt_opeld, seq):
         # NOTE Topology maintain
         def init_edge(start_node_id, end_node_id):
-            print("拓樸", start_node_id, end_node_id)
+            #print("拓樸", start_node_id, end_node_id)
             self.G.add_edge(start_node_id, end_node_id)
             self.G[start_node_id][end_node_id]["tmp"] = nested_dict()
             self.G[start_node_id][end_node_id]["detect"] = nested_dict()
@@ -1472,14 +1475,14 @@ class RinformanceRoute(app_manager.RyuApp):
             buckets.append(ofp_parser.OFPBucket(
                 bucket_id=bucket_id, actions=actions, properties=[_weight]))
             bucket_id = bucket_id+1
-            print("bucket_id",bucket_id)
+            #print("bucket_id",bucket_id)
             self.G.nodes[(datapath.id, None)]["now_max_group_id"] = self.G.nodes[(
                 datapath.id, None)]["now_max_group_id"]+1
         # 從多個路線根據權重(weight)隨機從buckets選一個OFPBucket(ofp.OFPGT_SELECT),OFPBucket裡面就放要actions要出去哪個port
         mod = ofp_parser.OFPGroupMod(datapath, command=ofp.OFPGC_ADD,
                                      type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
         mod.xid = self.G.nodes[(datapath.id, None)]["now_max_xid"]
-        print(mod.xid,mod)
+        #print(mod.xid,mod)
         self.G.nodes[(datapath.id, None)]["now_max_xid"] = self.G.nodes[(
             datapath.id, None)]["now_max_xid"]+1
 
@@ -1543,14 +1546,31 @@ class RinformanceRoute(app_manager.RyuApp):
             hub.spawn(self._send_ADD_FlowMod, mod)
 
         self.PATH[src][dst]["cookie"][_cookie] = [route_path]
+    #這裡要確保交換機先前設定的動作已經完成
+    def send_barrier_request(self, datapath,xid=None):
+        self.barrier_lock[datapath.id]=True
+        ofp_parser = datapath.ofproto_parser
+        req = ofp_parser.OFPBarrierRequest(datapath)
+        req.xid=xid
+        datapath.send_msg(req)
+    #當交換機已經完成先前的設定才會回傳這個
+    @set_ev_cls(ofp_event.EventOFPBarrierReply, MAIN_DISPATCHER)
+    def barrier_reply_handler(self, ev):
+        #print(ev.msg.)
+        msg = ev.msg
+        datapath = msg.datapath
+        self.barrier_lock[datapath.id]=False
+    def wait_finish_switch_BARRIER_finish(self,datapath):
+        self.send_barrier_request(datapath)
+        while self.barrier_lock[datapath.id]:
+            hub.sleep(0)
+        pass
     def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_dst, ipv4_src):
         #利用vlan tag把每個simple path切開
         #舉例有5條路線
-        
         #起始:一開始起點交換機就要從group entry裡面5個bucket選擇一個bucket,每個bucket代表某一條simple path,bucket做三個動作 1."Push VLAN header" 2."Set-Field VLAN_VID value"3."Output port" VLAN_VID為此simple path push vlan tag
         #中間:路由根據src dst vlan_id 去路由
         #最後:終點交換機要pop vlan tag才丟給host
-
         """
         非常重要要注意要清楚 vlan運作模式
         不管有沒有塞入vlan,ethertype永遠不變,只會向後擠
@@ -1559,33 +1579,37 @@ class RinformanceRoute(app_manager.RyuApp):
         塞入vlan
         |dst-mac|src-mac|0x8100|tci|ethertype|payload
         """
+        idle_timeout=5
         _cookie = self.get_cookie()
         vlan_tag=1
         for path in route_path_list:
             vlan_tci=ofproto_v1_5.OFPVID_PRESENT+vlan_tag#spec openflow1.5.1 p.82,你要多加這個openvswitch才知道你要設定vlan_vid
-            for index,i in enumerate(path[-1::-3]):
+            #path:[(1, 4), (1, None), (1, 2), (3, 1), (3, None), (3, 2), (4, 2), (4, None), (4, 3)]
+            for index,i in enumerate(path[5::3]):
                 set_datapath_id = i[0]
                 set_out_port = i[1]
                 tmp_datapath = self.G.nodes[(set_datapath_id, None)]["datapath"]
                 ofp = tmp_datapath.ofproto
                 parser = tmp_datapath.ofproto_parser  
-                if index==0:
+                
+                if index==(len(path)/3)-2:
                     #最後
+                    #print("最後")
                     match = parser.OFPMatch(
                     eth_type=ether_types.ETH_TYPE_IP, vlan_vid=vlan_tci,ipv4_src=ipv4_src,ipv4_dst=ipv4_dst)
-                    action_set = [parser.OFPActionOutput(port=set_out_port),parser.OFPActionPopVlan()]
+                    action_set = [parser.OFPActionPopVlan(),parser.OFPActionOutput(port=set_out_port)]
                     instruction = [parser.OFPInstructionActions(
-                        ofp.OFPIT_WRITE_ACTIONS, action_set)]
+                        ofp.OFPIT_APPLY_ACTIONS, action_set)]
                     mod = parser.OFPFlowMod(datapath=tmp_datapath,
                                             priority=2, table_id=2,
                                             command=ofp.OFPFC_ADD,
                                             match=match, cookie=_cookie,
-                                            instructions=instruction, idle_timeout=0
+                                            instructions=instruction, idle_timeout=idle_timeout
                                             )
                     self._send_ADD_FlowMod(mod)
-                    pass
-                elif index<(len(path)/3)-1:
+                else:
                     #中間
+                    #print("中間")
                     match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, vlan_vid=vlan_tci,ipv4_dst=ipv4_dst,ipv4_src=ipv4_src)
                     action = [parser.OFPActionOutput(port=set_out_port)]
                     instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action)]
@@ -1593,28 +1617,29 @@ class RinformanceRoute(app_manager.RyuApp):
                                             priority=2, table_id=2,
                                             command=ofp.OFPFC_ADD,
                                             match=match, cookie=_cookie,
-                                            instructions=instruction, idle_timeout=0
+                                            instructions=instruction, idle_timeout=idle_timeout
                                             )
                     self._send_ADD_FlowMod(mod)
-                else:
-                    #出事拉
-                    pass
             vlan_tag=vlan_tag+1
-        
         #起始
         port_list=[]
+        vlan_tag=[]
+        vlan_index=1
         for path in route_path_list:
             i=path[2]
             set_datapath_id = i[0]
             set_out_port = i[1]
             port_list.append(set_out_port)
             tmp_datapath = self.G.nodes[(set_datapath_id, None)]["datapath"]
-
+            vlan_tag.append(vlan_index)
+            vlan_index=vlan_index+1
         ofp = tmp_datapath.ofproto
         parser = tmp_datapath.ofproto_parser
-        vlan_tag=[x+1 for x in list(range(len(port_list)))]#1~max-1
-        print(vlan_tag)
         self.send_add_group_mod(tmp_datapath, port_list, weight_list,vlan_tag_list=vlan_tag,group_id=_cookie)
+
+        #確保先前的所有設定已經完成,才能開始設定起點的flow table
+        #如果不確保會導致封包已經開始傳送但是路徑尚未設定完成的錯誤
+        self.wait_finish_switch_BARRIER_finish(tmp_datapath)
         match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,ipv4_dst=ipv4_dst,ipv4_src=ipv4_src)
         action = [parser.OFPActionGroup(group_id=_cookie)]
         instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action)]
@@ -1622,9 +1647,10 @@ class RinformanceRoute(app_manager.RyuApp):
                                 priority=2, table_id=2,
                                 command=ofp.OFPFC_ADD,
                                 match=match, cookie=_cookie,
-                                instructions=instruction, idle_timeout=0
+                                instructions=instruction, idle_timeout=idle_timeout
                                 )
         self._send_ADD_FlowMod(mod)
+        #上面都完成就紀錄
 
 
     def setting_multi_route_path(self, route_path_list, weight_list, dst, src, delivery_schemes="unicast"):
@@ -1634,10 +1660,8 @@ class RinformanceRoute(app_manager.RyuApp):
         # delivery_schemes https://en.wikipedia.org/wiki/Routing#Delivery_schemes
         # 單播多路徑unicast
         # FIXME 未來開發多播multicast dst     可能要很多個?
-
         # 多條路徑(route_path_list)結合每個路徑的權重(weight_list)
         # weight_list[0]代表route_path_list[0]的權重 以此類推
-
         # 探討group如何select bucket
         # flow_mask_hash_fields    https://github.com/openvswitch/ovs/blob/v2.15.0/lib/flow.c#L2462
         # pick_default_select_group https://github.com/openvswitch/ovs/blob/v2.15.0/ofproto/ofproto-dpif-xlate.c#L4564
@@ -1645,7 +1669,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
         # 先來處理GROUP TABLE,找出哪些
         _cookie = self.get_cookie()
-        print(route_path_list, weight_list, dst, src)
+        #print(route_path_list, weight_list, dst, src)
         _switch = nested_dict(2, int)
         for path, weight in zip(route_path_list, weight_list):
             for i in path[-1::-3]:
@@ -1695,7 +1719,7 @@ class RinformanceRoute(app_manager.RyuApp):
         # FIXME 這個數值有最大值 需要回收
 
         self.PATH[src][dst]["cookie"][_cookie] = route_path_list
-        print("setting")
+        #print("setting")
         # route_path
 
     def _check_know_ip_place(self, ip):
@@ -1708,8 +1732,9 @@ class RinformanceRoute(app_manager.RyuApp):
             while self.ip_get_datapathid_port[ip] == {}:
                 hub.sleep(0)
                 # time.sleep(0.01)#如果沒有sleep會導致 整個系統停擺,可以有其他寫法？
+    
+    
     # 被動路由
-
     def handle_route(self, datapath, port, msg):
         # 下面這行再做,當不知道ip在哪個port與交換機,就需要利用arp prop序詢問
         data = msg.data
@@ -1734,10 +1759,9 @@ class RinformanceRoute(app_manager.RyuApp):
 
         """
         """
-        print("k short")
-        print(list(islice(nx.shortest_simple_paths(self.G, (src_datapath_id,
-              src_port), (dst_datapath_id, dst_port), weight="weight"), 4)))
-        print("k short")
+        #print("k short")
+        #print(list(islice(nx.shortest_simple_paths(self.G, (src_datapath_id,src_port), (dst_datapath_id, dst_port), weight="weight"), 4)))
+        #print("k short")
 
         route_path_list_go = list(islice(nx.shortest_simple_paths(
             self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight="weight"), 4))
