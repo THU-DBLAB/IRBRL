@@ -1,6 +1,7 @@
 from ryu.ofproto import ofproto_v1_5
 from ryu.lib.packet import ether_types, in_proto, icmpv6
 import networkx as nx
+from networkx.classes.function import path_weight
 def send_add_group_mod(self, datapath, port_list: list, weight_list: list,vlan_tag_list:list, group_id: int):
         """
         group_id是給flow entry指引要導到哪個group entry
@@ -45,6 +46,8 @@ def send_add_group_mod(self, datapath, port_list: list, weight_list: list,vlan_t
         datapath.send_msg(mod)
 
 def send_add_group_mod_v1(self, datapath,port_list:list,weight_list:list,group_id:int):
+     
+    assert all(isinstance(x, int) for x in weight_list),"send_add_group_mod_v1 weight_list必須都是整數"+str(weight_list)
     """
     group_id是給flow entry指引要導到哪個group entry
     """
@@ -68,10 +71,10 @@ def send_add_group_mod_v1(self, datapath,port_list:list,weight_list:list,group_i
     #從多個路線根據權重(weight)隨機從buckets選一個OFPBucket(ofp.OFPGT_SELECT),OFPBucket裡面就放要actions要出去哪個port
     mod = ofp_parser.OFPGroupMod(datapath, command=ofp.OFPGC_ADD,
                                 type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
-    mod.xid=self.G.nodes[(datapath.id,None)]["now_max_xid"]
-    self.G.nodes[(datapath.id,None)]["now_max_xid"]=self.G.nodes[(datapath.id,None)]["now_max_xid"]+1
-    print(mod)
+    mod.xid=self.get_xid(datapath.id)
     datapath.send_msg(mod)
+
+    self.error_search_by_xid[datapath.id][mod.xid]=mod
 
 
 def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_dst, ipv4_src):
@@ -168,20 +171,170 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
         self.PATH[ipv4_src][ipv4_dst]["cookie"][_cookie] = route_path_list
         #self.PATH[ipv4_src][ipv4_dst]["proitity"][priority] = _cookie
 
-def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,weight="weight"):
+def Packout_to_FlowTable(tmp_datapath,data):
+    ofp = tmp_datapath.ofproto
+    parser = tmp_datapath.ofproto_parser
+    match = tmp_datapath.ofproto_parser.OFPMatch(
+        in_port=ofp.OFPP_CONTROLLER)
+    actions = [parser.OFPActionOutput(port=ofp.OFPP_TABLE)]
+    out = parser.OFPPacketOut(datapath=tmp_datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                match=match, data=data,actions=actions)
+    tmp_datapath.send_msg(out)
+
+def Get_NOW_GRAPH(self,dst,priority):
+    check_G = nx.DiGraph()
+
+    if self.PATH[dst][priority]["path"]!={}:
+        for path,weight in zip(self.PATH[dst][priority]["path"],self.PATH[dst][priority]["weight"]):
+            prev_node=None
+            for node in path:  
+                if prev_node!=None:
+                    check_G.add_edge(prev_node, node, weight=1)
+                prev_node=node 
+    return check_G
+
+#--------------------------------
+"""
+底下的函數可以拿來產生路徑要餵食給setting_multi_route_path的參數
+
+FIXME 需要補 演算法複雜度
+"""
+#--------------------------------
+def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=None,weight="weight"):
     #這個保證路徑沒有loop
     loop_free_path=[]
-    check_G = nx.DiGraph()
+    path_length=[]
+    loop_check=Loop_Free_Check(check_G)
+    try:
+        shortest_simple_paths=nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
+    except:
+        return
+    for path in shortest_simple_paths:
+        if len(loop_free_path)==k:
+            break
+        prev_node=None
+        for node in path:  
+            if prev_node!=None:
+                print(prev_node,"->",node)
+                loop_check.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+            prev_node=node 
+        _check_free=loop_check.check_free_loop()
+        if _check_free:
+            loop_free_path.append(path)
+            path_length.append(path_weight(self.G, path, weight=weight))
+    
+    return loop_free_path,path_length
+
+class Loop_Free_Check():
+    def __init__(self,check_G):
+        if check_G==None:
+            check_G = nx.DiGraph()
+        self.check_G=check_G.copy()
+        self.tmp_check_G=self.check_G.copy()
+    def add_edge(self,prev_node,node,weight=None):
+        self.tmp_check_G.add_edge(prev_node, node, weight=weight)
+        pass
+    def check_free_loop(self):
+        try:
+            nx.find_cycle(self.tmp_check_G, orientation="original")
+            self.tmp_check_G=self.check_G
+            print("!!!有還")
+            exit(1)
+            return False
+        except:
+            self.check_G=self.tmp_check_G
+            return True
+
+        
+
+def k_shortest_path_first_and_maximum_flow_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=None,weight="weight"):
+    #這個保證路徑沒有loop
+    #當我們想要考量 最大剩餘頻寬 於鏈路cost如何合併? 
+    loop_free_path=[]
+    path_length=[]
+    loop_check=Loop_Free_Check(check_G)
+    for path in nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
+        if len(loop_free_path)==k:
+            break
+        prev_node=None
+        for node in path:  
+            if prev_node!=None:
+                print(prev_node,node,weight)
+                loop_check.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+            prev_node=node 
+        _check_free=loop_check.check_free_loop()
+        if _check_free:
+            loop_free_path.append(path)
+            path_length.append(path_weight(self.G, path, weight=weight))
+
+     
+    return loop_free_path,path_length
+
+
+def k_maximum_flow_loop_free_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=None,weight="weight",capacity="capacity"):
+    #這個保證路徑沒有loop
+    #當我們想要考量 最大剩餘頻寬 於鏈路cost如何合併? 
+    loop_free_path=[]
+    path_length=[]
+    tmp_G=self.G.copy()
+
+    if check_G==None:
+        check_G = nx.DiGraph()
+
+    while len(loop_free_path)<k:
+        try:
+            maxflow=nx.maximum_flow(tmp_G,(src_datapath_id, src_port), (dst_datapath_id, dst_port),capacity=capacity)  
+            
+            _tmp_path=[]
+            for node in maxflow:
+                _tmp_path.append(node)
+            loop_free_path.append(_tmp_path)
+
+
+            G.remove_edge(0, 1)
+        except:
+            pass
+            break
+
+
+    return loop_free_path
+        
+    if check_G==None:
+        check_G = nx.DiGraph()
     for path in nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
         tmp_check_G=check_G.copy()
         if len(loop_free_path)==k:
             break
-        for index,node in enumerate(path):  
-            if index!=0:
-                tmp_check_G.add_edge(path[index-1], node, weight=0)
+        prev_node=None
+        for node in path:  
+            if prev_node!=None:
+                tmp_check_G.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+            prev_node=node 
         try:
             nx.find_cycle(tmp_check_G, orientation="original")
         except:
             check_G=tmp_check_G
             loop_free_path.append(path)
-    return loop_free_path
+            path_length.append(path_weight(check_G, path, weight=weight))
+    return loop_free_path,path_length
+
+
+ 
+
+
+def ECMP_PATH(self,src_datapath_id,src_port,dst_datapath_id,dst_port,weight="weight"):
+    #ecmp選擇多條cost與shortest path一樣的路徑
+    #會造成選擇不多樣
+    #ecmp跟我們說這樣的條件會保證loop free所以不需要確認
+    ok_path=[]
+    best_length=0
+    for idx,path in enumerate(nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)):
+        if idx==0:
+            best_length=path_weight(self.G, path, weight=weight)
+            ok_path.append(path)
+            continue
+        if best_length==path_weight(self.G, path, weight=weight):
+            ok_path.append(path)
+        else:
+            break      
+    return ok_path,best_length
