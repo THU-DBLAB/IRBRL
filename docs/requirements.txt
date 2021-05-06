@@ -9,3 +9,5 @@ jupyter
 matplotlib
 numpy
 sphinx-automodapi
+ryu
+networkx
