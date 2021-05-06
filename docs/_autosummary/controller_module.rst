@@ -27,7 +27,6 @@
    :recursive:
 
    controller_module.RL
-   controller_module.RR
    controller_module.dynamic_tc
    controller_module.ovsdb
    controller_module.ovsdb2
