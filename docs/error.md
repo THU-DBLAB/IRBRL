@@ -1,4 +1,4 @@
-# 錯誤排解2
+# 錯誤排解
 
 ## Mininet Cannot find required executable controller
 

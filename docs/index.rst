@@ -7,11 +7,13 @@
    :maxdepth: 2
 
    Home page <self>
-   s.rst
-   code.rst
+   install.md
    error.md
-   c.md
    outnet.md
+   code.rst
+   
+   
+   
   
     
 基於不同Qos動態多路徑路由基於強化學習
