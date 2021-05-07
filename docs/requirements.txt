@@ -11,3 +11,5 @@ numpy
 sphinx-automodapi
 ryu
 networkx
+nested_dict
+zmq
