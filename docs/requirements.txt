@@ -1,3 +1,4 @@
+eventlet==0.30.2
 sphinx
 sphinx-rtd-theme
 pydata-sphinx-theme
