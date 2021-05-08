@@ -1,11 +1,14 @@
-controller\_module.dynamic\_tc
-==============================
+dynamic\_tc
+===========
 
 .. automodule:: controller_module.dynamic_tc
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    
@@ -13,6 +16,7 @@ controller\_module.dynamic\_tc
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       entry

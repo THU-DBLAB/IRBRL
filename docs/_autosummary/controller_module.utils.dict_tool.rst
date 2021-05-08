@@ -1,11 +1,14 @@
-controller\_module.utils.dict\_tool
-===================================
+dict\_tool
+==========
 
 .. automodule:: controller_module.utils.dict_tool
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    
@@ -13,6 +16,7 @@ controller\_module.utils.dict\_tool
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       class2dict

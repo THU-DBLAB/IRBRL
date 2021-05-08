@@ -1,11 +1,14 @@
-controller\_module.tui
-======================
+tui
+===
 
 .. automodule:: controller_module.tui
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    

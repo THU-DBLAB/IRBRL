@@ -1,18 +1,21 @@
-{{ fullname | escape | underline}}
+{{ name | escape | underline}}
 
 .. automodule:: {{ fullname }}
-
-   {% block attributes %}
-   {% if attributes %}
-   .. rubric:: Module attributes
-
+    
+   {% block all_attributes %}
+   {% if all_attributes %}
+   .. rubric:: Module all_attributes
    .. autosummary::
       :toctree:
-   {% for item in attributes %}
+      :template: custom-arg-template.rst
+   {% for item in all_attributes %}
       {{ item }}
    {%- endfor %}
    {% endif %}
    {% endblock %}
+
+   
+
 
    {% block functions %}
    {% if functions %}
@@ -20,6 +23,7 @@
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    {% for item in functions %}
       {{ item }}

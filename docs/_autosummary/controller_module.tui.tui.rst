@@ -1,11 +1,14 @@
-controller\_module.tui.tui
-==========================
+tui
+===
 
 .. automodule:: controller_module.tui.tui
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    
@@ -13,6 +16,7 @@ controller\_module.tui.tui
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       main

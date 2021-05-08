@@ -1,5 +1,6 @@
-controller\_module.tui.tui.main
-===============================
+main
+====
+ 
 
 .. currentmodule:: controller_module.tui.tui
 

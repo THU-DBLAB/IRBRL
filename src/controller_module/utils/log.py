@@ -1,6 +1,9 @@
 from logging.handlers import RotatingFileHandler
 import logging
 relative_path="utils/log_file/"
+"""
+sdsa
+"""
 Global_Log ={}
 """
 https://docs.python.org/2/library/logging.html#logging-levels

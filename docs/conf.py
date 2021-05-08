@@ -109,7 +109,8 @@ html_css_files = ["readthedocs-custom.css"] # Override some CSS settings
 
 # Pydata theme
 #html_theme = "pydata_sphinx_theme"
-#html_logo = "_static/logo-company.png"
+html_logo = "_static/mars.png"
+html_favicon="_static/mars.png"
 #html_theme_options = { "show_prev_next": False}
 #html_css_files = ['pydata-custom.css']
 

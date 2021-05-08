@@ -1,5 +1,5 @@
-controller\_module.route\_module.Loop\_Free\_Check
-==================================================
+Loop\_Free\_Check
+=================
 
 .. currentmodule:: controller_module.route_module
 

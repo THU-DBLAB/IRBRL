@@ -1,18 +1,22 @@
-controller\_module.utils.log
-============================
+log
+===
 
 .. automodule:: controller_module.utils.log
-
+    
    
    
-   .. rubric:: Module attributes
-
+   .. rubric:: Module all_attributes
    .. autosummary::
       :toctree:
+      :template: custom-arg-template.rst
    
+      relative_path
       Global_Log
    
    
+
+   
+
 
    
    
@@ -20,6 +24,7 @@ controller\_module.utils.log
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       setup_logger

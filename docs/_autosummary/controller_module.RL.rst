@@ -1,11 +1,14 @@
-controller\_module.RL
-=====================
+RL
+==
 
 .. automodule:: controller_module.RL
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    
@@ -13,6 +16,7 @@ controller\_module.RL
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       entry

@@ -1,5 +1,6 @@
-controller\_module.route\_module.k\_shortest\_path\_loop\_free\_version
-=======================================================================
+k\_shortest\_path\_loop\_free\_version
+======================================
+ 
 
 .. currentmodule:: controller_module.route_module
 

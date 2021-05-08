@@ -1,5 +1,5 @@
-RR.RinformanceRoute
-===================
+RinformanceRoute
+================
 
 .. currentmodule:: RR
 
@@ -41,7 +41,6 @@ RR.RinformanceRoute
       ~RinformanceRoute.get_cookie
       ~RinformanceRoute.get_handlers
       ~RinformanceRoute.get_observers
-      ~RinformanceRoute.get_xid
       ~RinformanceRoute.handle_arp
       ~RinformanceRoute.handle_lldp
       ~RinformanceRoute.handle_opeld
@@ -87,7 +86,6 @@ RR.RinformanceRoute
 
    .. autosummary::
    
-      ~RinformanceRoute.G
       ~RinformanceRoute.OFP_VERSIONS
       ~RinformanceRoute.al_module
       ~RinformanceRoute.barrier_lock
@@ -97,5 +95,7 @@ RR.RinformanceRoute
       ~RinformanceRoute.sem
       ~RinformanceRoute.socket
       ~RinformanceRoute.xid_sem
+      ~RinformanceRoute.MultiPath_Slicing_EtherType
+      ~RinformanceRoute.PATH
    
    

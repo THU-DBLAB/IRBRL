@@ -1,5 +1,6 @@
-controller\_module.RL.entry
-===========================
+entry
+=====
+ 
 
 .. currentmodule:: controller_module.RL
 

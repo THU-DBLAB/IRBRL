@@ -33,18 +33,24 @@ import sys
 from multiprocessing import Process
 from controller_module import RL
 from controller_module import dynamic_tc
+from controller_module import OFPT_FLOW_MOD
 import zmq
+ 
 CONF = cfg.CONF
+from controller_module.monitor_module import MonitorModule
+
 # log_file_name="rr.log"
 # log.setup_logger(filename=log_file_name, maxBytes=0,backupCount=0, level=logging.DEBUG)
 # log.Global_Log[log_file_name].debug('dd ')
+
 class RinformanceRoute(app_manager.RyuApp):
     """
     控制器執行的主程式 `ryu-managment RR.py`
     """
-
-
     OFP_VERSIONS = [ofproto_v1_5.OFP_VERSION]
+    _CONTEXTS = {
+    'cc': MonitorModule
+    }
     "設定控制器openflow的版本"
     al_module = Process(target=RL.entry, args=())
     "強化學習模塊"
@@ -58,14 +64,13 @@ class RinformanceRoute(app_manager.RyuApp):
     barrier_lock={}#
     "確認交換機是否收到OFPT_BARRIER_REPLY :py:mod:`~RR.RinformanceRoute` "
 
-    G = nx.DiGraph()
+     
     "因為網路是全雙工所以需要有向圖表達"
 
     def __init__(self, *args, **kwargs):
         """
         dsfds
 
-        :meta public:
 
         """
         # SECTION __init__
@@ -203,58 +208,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
         # NOTE self.G = nx.DiGraph() Design
 
-        """
-        利用DiGraph抽象全雙工,並且直接呼叫nx.shortest_path(self.G,(交換機1,None),(交換機2,None),weight="weight")導出路由細節
-        節點(Node)
-            -交換機-這個Node會塞交換機的統計訊息
-            -交換機每個port
-        線(Edge)
-            -交換機與port
-            -port與port-這個Edge會塞鏈路計算的統計訊息
-        所以需要check_edge_is_link,check_node_is_switch
-        """
-
-        """
-                 weight=0         Edge          weight=0
-                 +----+        +-------+        +----+
-        Switch1  v    | port22 v       | port55 v    |Switch2
-        +--------+    +--------+       +--------+    +--------+
-        |(1,None)|    | (1,22) |       | (2,55) |    |(2,None)|
-        +--------+    +--------+       +--------+    +--------+
-          Node   |    ^        |       ^        |    ^  Node
-                 +----+        +-------+        +----+
-                 weight=0         Edge          weight=0
-        """
-        # NOTE NODE STRUCT SPEC
-        """
-        node spec
-        len(ofp_multipart_type)==20
-        ""$"" mean python variable
-
-        self.G.nodes[($datapath.id,None)]   |["datapath"]=<Datapath object>
-                                            |["port"]={$port_id:{
-                                                        "DSCP_METER_SET_FLAG":True/{},
-                                                        "OFPMP_PORT_DESC":
-                                                                {"port_no": 1, "length": 72, "hw_addr": "be:f3:b6:8a:f8:1e", "config": 0,"state": 4, "properties": [{"type": 0, "length": 32, "curr": 2112,"advertised": 0, "supported": 0, "peer": 0, "curr_speed": 10000000,"max_speed": 0}], "update_time": 1552314248.2066813
-                                                                },
-                                                        "OFPMP_PORT_STATS":
-                                                                {'length': 304, 'port_no': 2, 'duration_sec': 17, 'duration_nsec': 235000000, 'rx_packets': 11, 'tx_packets': 10, 'rx_bytes': 698, 'tx_bytes': 684, 'rx_dropped': 0, 'tx_dropped': 0, 'rx_errors': 0, 'tx_errors': 0, 'properties': [{'type': 0, 'length': 40, 'rx_frame_err': 0, 'rx_over_err': 0, 'rx_crc_err': 0, 'collisions': 0}, {'type': 65535, 'length': 184, 'experimenter': 43521, 'exp_type': 1, 'data': [
-                                                                    0, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295]}], 'update_time': 1553333684.6574402, 'rx_bytes_delta': 14, 'tx_bytes_delta': 14},
-
-                                                        #for ARP table
-                                                        "host":{[ip address]:[mac adress]}
-                                                        }
-                                            }
-                                            #sec 'active working duration of all port '
-                                            |["all_port_duration_s"]=<class 'int'>
-                                            #temp when del the port, a new port restart,    #OFPMP_PORT_STATS's duration_sec will be zero
-                                            |["all_port_duration_s_temp"]=<class 'int'>
-                                            |["FLOW_TABLE"][$table_id<class 'int'>][$priority<class 'int'>][$match<class 'str'>]=<class 'ryu.ofproto.ofproto_v1_5_parser.OFPFlowMod'>
-                                            |["now_max_group_id"]=0
-                                            |["now_max_xid"]=0
-                                            |["GROUP_TABLE"][$group_id<class 'int'>]=<class 'ryu.ofproto.ofproto_v1_5_parser.OFPGroupMod'>
-                                           
-        """
+         
         # NOTE EDGES STRUCT SPEC
         # Support Link Aggregation
         # $list_of_port_id1[0]<->$list_of_port_id2[0]
@@ -277,7 +231,6 @@ class RinformanceRoute(app_manager.RyuApp):
     |F|o|r| |D|i|G|r|a|p|h|
     +-+-+-+ +-+-+-+-+-+-+-+
     """
-
     def check_edge_is_link(self, ID1, ID2):
         # if port connect to port ,it return True
         if ID1[1] == None or ID2[1] == None:
@@ -680,9 +633,7 @@ class RinformanceRoute(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def _port_stats_reply_handler(self, ev):
         """
-        fesfew
-
-      
+        fesfew      
         """
         msg = ev.msg
         datapath = msg.datapath
@@ -849,24 +800,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
     """
 
-    def _send_ADD_FlowMod(self, mod):
-        datapath = mod.datapath
-        OFPFlowMod = mod.__dict__
-        table_id = OFPFlowMod["table_id"]
-        match = OFPFlowMod["match"]
-        priority = OFPFlowMod["priority"]
-        ofp = datapath.ofproto
-        # 要交換機當flow entry被刪除都要通知控制器
-        mod.flags = ofp.OFPFF_SEND_FLOW_REM
-        # if self._check_no_overlap_on_server(datapath.id,table_id,priority,match):
-        mod.xid = self.get_xid(datapath.id)
-
-        self.G.nodes[(datapath.id, None)
-                     ]["FLOW_TABLE"][table_id][priority][str(match)] = mod
-        self.error_search_by_xid[datapath.id][mod.xid]=mod
-        datapath.send_msg(mod)
-        #    return True
-        return False
+    
 
     def _check_no_overlap_on_server(self, datapath_id, table_id, priority, match):
         return True if len(self.G.nodes[(datapath_id, None)]["FLOW_TABLE"][table_id][priority][str(match)]) == 0 else False
@@ -878,8 +812,7 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionGotoTable(to_table_id)]
         mod = parser.OFPFlowMod(datapath=datapath, table_id=from_table_id, priority=0,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
-
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def drop_all(self, datapath):
         """
@@ -898,7 +831,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                 match=match,
                                 instructions=instruction
                                 )
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def add_lldp_flow(self, datapath):
         ofp = datapath.ofproto
@@ -913,7 +846,7 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def DSCP_flow(self, datapath, in_port, dscp, IPVx, table_id, meter_id):
         # IPVx=ether_types.ETH_TYPE_IPV6/ether_types.ETH_TYPE_IP
@@ -935,7 +868,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                 match=match,
                                 instructions=instruction, hard_timeout=3
                                 )
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def unknow_route_ask_controller(self, datapath):
         ofp = datapath.ofproto
@@ -945,7 +878,7 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=0, table_id=2,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst, hard_timeout=0)
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def control_and_except(self, datapath, **kwargs):
         ofp = datapath.ofproto
@@ -955,7 +888,7 @@ class RinformanceRoute(app_manager.RyuApp):
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=65535,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst, hard_timeout=0)
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     # !SECTION
     # SECTION Meter Modification Message Modifications
@@ -1036,11 +969,9 @@ class RinformanceRoute(app_manager.RyuApp):
             num_packets = max(num_packets, 1)  # max(min(maxn, n), minn)
 
         # update start time
-
         for seq in range(num_packets):
             self.OpELD_start_time[datapath.id][out_port][seq] = time.time()
             SEQ = (seq).to_bytes(SEQ_size, byteorder="big")
-
             opeld_packet = opeld_header+SEQ+bytearray(extra_byte)
             out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                       match=match, actions=actions, data=opeld_packet)
@@ -1387,7 +1318,7 @@ class RinformanceRoute(app_manager.RyuApp):
             ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(2)]
         mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=1,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
         pass
 
     def handle_arp(self, datapath, pkt_arp, in_port, packet):
@@ -1658,7 +1589,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                     match=match, cookie=_cookie,
                                     instructions=instruction, idle_timeout=60
                                     )
-            hub.spawn(self._send_ADD_FlowMod, mod)
+            hub.spawn(OFPT_FLOW_MOD.send_ADD_FlowMod, mod)
 
         self.PATH[dst][priority]["cookie"][_cookie] = [route_path]
     #這裡要確保交換機先前設定的動作已經完成
@@ -1806,7 +1737,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                             match=match, cookie=_cookie,
                                             instructions=instruction, idle_timeout=idle_timeout,hard_timeout=hard_timeout
                                             )
-                    self._send_ADD_FlowMod(mod)
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
                 else:
                    
                     action = [parser.OFPActionOutput(port=set_out_port)]
@@ -1818,7 +1749,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                             match=match, cookie=_cookie,
                                             instructions=instruction, idle_timeout=idle_timeout,hard_timeout=hard_timeout
                                             )
-                    self._send_ADD_FlowMod(mod)
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
         #確保已經設定
         for tmp_datapath in set_switch_for_barrier:
             self.wait_finish_switch_BARRIER_finish(tmp_datapath)
@@ -1845,7 +1776,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                         match=match, cookie=_cookie,
                                         instructions=instruction, idle_timeout=idle_timeout,hard_timeout=hard_timeout
                                         )
-                self._send_ADD_FlowMod(mod)
+                OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
             else:
                 action = [parser.OFPActionOutput(port=set_out_port)]
                 instruction = [parser.OFPInstructionActions(
@@ -1856,7 +1787,7 @@ class RinformanceRoute(app_manager.RyuApp):
                                         match=match, cookie=_cookie,
                                         instructions=instruction, idle_timeout=idle_timeout,hard_timeout=hard_timeout
                                         )
-                self._send_ADD_FlowMod(mod)
+                OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
         for tmp_datapath in set_switch_for_barrier:
             self.wait_finish_switch_BARRIER_finish(tmp_datapath)
 
@@ -1988,13 +1919,7 @@ class RinformanceRoute(app_manager.RyuApp):
 
 
         self.route_control_sem.release()
-         
-    def get_xid(self,datapath_id):
-        self.xid_sem.acquire()
-        self.G.nodes[(datapath_id, None)]["now_max_xid"]=self.G.nodes[(datapath_id, None)]["now_max_xid"]+1
-        _xid=self.G.nodes[(datapath_id, None)]["now_max_xid"]
-        self.xid_sem.release()
-        return _xid
+   
         
     def get_cookie(self,dst,priority):
         # Semaphore(1)

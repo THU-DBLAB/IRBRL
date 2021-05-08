@@ -1,5 +1,5 @@
-controller\_module.tui.tui.Screen
-=================================
+Screen
+======
 
 .. currentmodule:: controller_module.tui.tui
 

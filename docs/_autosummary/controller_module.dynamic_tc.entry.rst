@@ -1,5 +1,6 @@
-controller\_module.dynamic\_tc.entry
-====================================
+entry
+=====
+ 
 
 .. currentmodule:: controller_module.dynamic_tc
 

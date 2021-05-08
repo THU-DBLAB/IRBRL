@@ -1,5 +1,6 @@
-controller\_module.utils.log.setup\_logger
-==========================================
+setup\_logger
+=============
+ 
 
 .. currentmodule:: controller_module.utils.log
 

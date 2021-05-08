@@ -1,5 +1,6 @@
-controller\_module.route\_module.send\_add\_group\_mod
-======================================================
+send\_add\_group\_mod
+=====================
+ 
 
 .. currentmodule:: controller_module.route_module
 

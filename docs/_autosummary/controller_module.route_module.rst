@@ -1,11 +1,14 @@
-controller\_module.route\_module
-================================
+route\_module
+=============
 
 .. automodule:: controller_module.route_module
+    
+   
+   
+   
 
    
-   
-   
+
 
    
    
@@ -13,6 +16,7 @@ controller\_module.route\_module
 
    .. autosummary::
       :toctree:
+      :template: custom-function-template.rst
       :nosignatures:
    
       ECMP_PATH
