@@ -1,88 +1,41 @@
+import ryu
+from ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_5
+# for RYU decorator doing catch Event
+from ryu.controller.handler import set_ev_cls
+from ryu.controller.handler import HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.controller import ofp_event
+from ryu.lib.packet import ethernet, arp, icmp, ipv4
 from ryu.lib.packet import ether_types, in_proto, icmpv6
+from ryu.lib.packet import lldp
+from ryu.lib.packet import packet
+from ryu.utils import hex_array
+from ryu.lib import hub
+from ryu import cfg
+import time
+from nested_dict import *
+import numpy as np
 import networkx as nx
-from networkx.classes.function import path_weight
-def send_add_group_mod(self, datapath, port_list: list, weight_list: list,vlan_tag_list:list, group_id: int):
-        """
-        group_id是給flow entry指引要導到哪個group entry
-        """
-        ofp = datapath.ofproto
-        ofp_parser = datapath.ofproto_parser
-        buckets = []
-        # Each bucket of the group must have an unique Bucket ID-openflow1.51-p115 所以亂給個id給它 反正我沒用到
-        bucket_id = 0
-        for port, weight,vlan_vid in zip(port_list, weight_list,vlan_tag_list):
-            #bucket_id=self.G.nodes[(datapath.id,None)]["now_max_group_id"]
-            assert 1<=vlan_vid<=4095,"vlan_vid range need in 1~4095"#vlan_vid 1~4095
-            
-            vlan_tci=ofproto_v1_5.OFPVID_PRESENT+vlan_vid#spec openflow1.5.1 p.82,你要多加這個openvswitch才知道你要設定vlan_vid
-            """
-            enum ofp_vlan_id { 
-                OFPVID_PRESENT = 0x1000, /* Bit that indicate that a VLAN id is set */ 
-                OFPVID_NONE = 0x0000, /* No VLAN id was set. */
-            };
-            """
-            #三個動作1.Push VLAN header" 2."Set-Field VLAN_VID value"3."Output port" 
-            actions = [ofp_parser.OFPActionPushVlan(self.MultiPath_Slicing_EtherType),ofp_parser.OFPActionSetField(vlan_vid=vlan_tci),ofp_parser.OFPActionOutput(port)]
-            # spec openflow1.5.1 p.116  struct ofp_group_bucket_prop_weight
-            # 注意ryu ofv1.5.1的group範例寫錯
-            # 下面這個寫法要靠自己挖ryu原始碼才寫出來,所以遇到問題盡量挖控制器ryu,openvswitch原始碼
-            # ofp_bucket->properties->ofp_group_bucket_prop_weight-spec openflow1.5.1 p.115~p.116
-            _weight = ofp_parser.OFPGroupBucketPropWeight(
-                weight=weight, length=8, type_=ofp.OFPGBPT_WEIGHT)
-            buckets.append(ofp_parser.OFPBucket(
-                bucket_id=bucket_id, actions=actions, properties=[_weight]))
-            bucket_id = bucket_id+1
-            #print("bucket_id",bucket_id)
-            self.G.nodes[(datapath.id, None)]["now_max_group_id"] = self.G.nodes[(
-                datapath.id, None)]["now_max_group_id"]+1
-        # 從多個路線根據權重(weight)隨機從buckets選一個OFPBucket(ofp.OFPGT_SELECT),OFPBucket裡面就放要actions要出去哪個port
-        mod = ofp_parser.OFPGroupMod(datapath, command=ofp.OFPGC_ADD,
-                                     type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
-        mod.xid = self.G.nodes[(datapath.id, None)]["now_max_xid"]
-        #print(mod.xid,mod)
-        self.G.nodes[(datapath.id, None)]["now_max_xid"] = self.G.nodes[(
-            datapath.id, None)]["now_max_xid"]+1
-        datapath.send_msg(mod)
+from controller_module.utils import log, dict_tool
+from controller_module import GLOBAL_VALUE
+from controller_module import OFPT_FLOW_MOD,OFPT_PACKET_OUT
+from controller_module.route_metrics import formula
+from controller_module.OFPT_PACKET_OUT import send_arp_packet 
+CONF = cfg.CONF
 
-def send_add_group_mod_v1(self, datapath,port_list:list,weight_list:list,group_id:int):
-     
-    assert all(isinstance(x, int) for x in weight_list),"send_add_group_mod_v1 weight_list必須都是整數"+str(weight_list)
-    """
-    group_id是給flow entry指引要導到哪個group entry
-    """
-    ofp = datapath.ofproto
-    ofp_parser = datapath.ofproto_parser
-    buckets=[]
-    #Each bucket of the group must have an unique Bucket ID-openflow1.51-p115 所以亂給個id給它 反正我沒用到
-    bucket_id=1
-    for port,weight in zip(port_list,weight_list):
-        #bucket_id=self.G.nodes[(datapath.id,None)]["now_max_group_id"]
-        actions = [ofp_parser.OFPActionOutput(port)]
-        #spec openflow1.5.1 p.116  struct ofp_group_bucket_prop_weight
-        #注意ryu ofv1.5.1的group範例寫錯
-        #下面這個寫法要靠自己挖ryu原始碼才寫出來,所以遇到問題盡量挖控制器ryu,openvswitch原始碼
-        #ofp_bucket->properties->ofp_group_bucket_prop_weight-spec openflow1.5.1 p.115~p.116 
-        _weight=ofp_parser.OFPGroupBucketPropWeight(weight=weight,length=8,type_=ofp.OFPGBPT_WEIGHT)
-        buckets.append(ofp_parser.OFPBucket(bucket_id=bucket_id,actions=actions,properties=[_weight]))
-        bucket_id=bucket_id+1
+
+class RouteModule(app_manager.RyuApp):
     
-    #self.G.nodes[(datapath.id,None)]["now_max_group_id"]=self.G.nodes[(datapath.id,None)]["now_max_group_id"]+1
-    #從多個路線根據權重(weight)隨機從buckets選一個OFPBucket(ofp.OFPGT_SELECT),OFPBucket裡面就放要actions要出去哪個port
-     
-    command=None
-    if self.G.nodes[(datapath.id,None)]["GROUP_TABLE"][group_id]=={}:
-        command=ofp.OFPGC_ADD
-    else:
-        command=ofp.OFPGC_MODIFY
+    OFP_VERSIONS = [ofproto_v1_5.OFP_VERSION]
 
-    mod = ofp_parser.OFPGroupMod(datapath, command=command,type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
-    mod.xid=self.get_xid(datapath.id)
-    datapath.send_msg(mod)
-    self.G.nodes[(datapath.id,None)]["GROUP_TABLE"][group_id]=mod
-
-    self.error_search_by_xid[datapath.id][mod.xid]=mod
-
+    def __init__(self, *args, **kwargs):
+        
+        print(args,kwargs)
+       
+        print(args)
+        super(RouteModule, self).__init__(*args, **kwargs)
+        
+ 
 
 def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_dst, ipv4_src):
         #利用vlan tag把每個simple path切開
@@ -100,7 +53,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
         """
         priority=2
         idle_timeout=5
-        _cookie = self.get_cookie()
+        _cookie = GLOBAL_VALUE.get_cookie()
         vlan_tag=1
         for path in route_path_list:
             vlan_tci=ofproto_v1_5.OFPVID_PRESENT+vlan_tag#spec openflow1.5.1 p.82,你要多加這個openvswitch才知道你要設定vlan_vid
@@ -108,7 +61,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
             for index,i in enumerate(path[5::3]):
                 set_datapath_id = i[0]
                 set_out_port = i[1]
-                tmp_datapath = self.G.nodes[(set_datapath_id, None)]["datapath"]
+                tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
                 ofp = tmp_datapath.ofproto
                 parser = tmp_datapath.ofproto_parser  
                 if index==(len(path)/3)-2:
@@ -125,7 +78,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
                                             match=match, cookie=_cookie,
                                             instructions=instruction, idle_timeout=idle_timeout
                                             )
-                    self._send_ADD_FlowMod(mod)
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
                 else:
                     #中間
                     #print("中間")
@@ -138,7 +91,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
                                             match=match, cookie=_cookie,
                                             instructions=instruction, idle_timeout=idle_timeout
                                             )
-                    self._send_ADD_FlowMod(mod)
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
             vlan_tag=vlan_tag+1
         #起始
         port_list=[]
@@ -149,7 +102,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
             set_datapath_id = i[0]
             set_out_port = i[1]
             port_list.append(set_out_port)
-            tmp_datapath = self.G.nodes[(set_datapath_id, None)]["datapath"]
+            tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
             vlan_tag.append(vlan_index)
             vlan_index=vlan_index+1
             #保證剛才路徑設定完成
@@ -172,11 +125,11 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
                                 match=match, cookie=_cookie,
                                 instructions=instruction, idle_timeout=idle_timeout
                                 )
-        self._send_ADD_FlowMod(mod)
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
         #上面都完成就紀錄
          
-        self.PATH[ipv4_src][ipv4_dst]["cookie"][_cookie] = route_path_list
-        #self.PATH[ipv4_src][ipv4_dst]["proitity"][priority] = _cookie
+        GLOBAL_VALUE.PATH[ipv4_src][ipv4_dst]["cookie"][_cookie] = route_path_list
+        #GLOBAL_VALUE.PATH[ipv4_src][ipv4_dst]["proitity"][priority] = _cookie
 
 def Packout_to_FlowTable(tmp_datapath,data):
     ofp = tmp_datapath.ofproto
@@ -191,8 +144,8 @@ def Packout_to_FlowTable(tmp_datapath,data):
 def Get_NOW_GRAPH(self,dst,priority):
     check_G = nx.DiGraph()
 
-    if self.PATH[dst][priority]["path"]!={}:
-        for path,weight in zip(self.PATH[dst][priority]["path"],self.PATH[dst][priority]["weight"]):
+    if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:
+        for path,weight in zip(GLOBAL_VALUE.PATH[dst][priority]["path"],GLOBAL_VALUE.PATH[dst][priority]["weight"]):
             prev_node=None
             for node in path:  
                 if prev_node!=None:
@@ -213,7 +166,7 @@ def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapa
     path_length=[]
     loop_check=Loop_Free_Check(check_G)
     try:
-        shortest_simple_paths=nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
+        shortest_simple_paths=nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
     except:
         return
     for path in shortest_simple_paths:
@@ -223,12 +176,12 @@ def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapa
         for node in path:  
             if prev_node!=None:
                  
-                loop_check.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+                loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
             prev_node=node 
         _check_free=loop_check.check_free_loop()
         if _check_free:
             loop_free_path.append(path)
-            path_length.append(path_weight(self.G, path, weight=weight))
+            path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
     
     return loop_free_path,path_length
 
@@ -266,19 +219,19 @@ def k_shortest_path_first_and_maximum_flow_version(self,k,src_datapath_id,src_po
     loop_free_path=[]
     path_length=[]
     loop_check=Loop_Free_Check(check_G)
-    for path in nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
+    for path in nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
         if len(loop_free_path)==k:
             break
         prev_node=None
         for node in path:  
             if prev_node!=None:
                 print(prev_node,node,weight)
-                loop_check.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+                loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
             prev_node=node 
         _check_free=loop_check.check_free_loop()
         if _check_free:
             loop_free_path.append(path)
-            path_length.append(path_weight(self.G, path, weight=weight))
+            path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
 
      
     return loop_free_path,path_length
@@ -289,7 +242,7 @@ def k_maximum_flow_loop_free_version(self,k,src_datapath_id,src_port,dst_datapat
     #當我們想要考量 最大剩餘頻寬 於鏈路cost如何合併? 
     loop_free_path=[]
     path_length=[]
-    tmp_G=self.G.copy()
+    tmp_G=GLOBAL_VALUE.G.copy()
 
     if check_G==None:
         check_G = nx.DiGraph()
@@ -314,14 +267,14 @@ def k_maximum_flow_loop_free_version(self,k,src_datapath_id,src_port,dst_datapat
         
     if check_G==None:
         check_G = nx.DiGraph()
-    for path in nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
+    for path in nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight):
         tmp_check_G=check_G.copy()
         if len(loop_free_path)==k:
             break
         prev_node=None
         for node in path:  
             if prev_node!=None:
-                tmp_check_G.add_edge(prev_node, node, weight=self.G[prev_node][node][weight])
+                tmp_check_G.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
             prev_node=node 
         try:
             nx.find_cycle(tmp_check_G, orientation="original")
@@ -344,12 +297,12 @@ def ECMP_PATH(self,src_datapath_id,src_port,dst_datapath_id,dst_port,weight="wei
     #ecmp跟我們說這樣的條件會保證loop free所以不需要確認
     ok_path=[]
     best_length=0
-    for idx,path in enumerate(nx.shortest_simple_paths(self.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)):
+    for idx,path in enumerate(nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)):
         if idx==0:
-            best_length=path_weight(self.G, path, weight=weight)
+            best_length=path_weight(GLOBAL_VALUE.G, path, weight=weight)
             ok_path.append(path)
             continue
-        if best_length==path_weight(self.G, path, weight=weight):
+        if best_length==path_weight(GLOBAL_VALUE.G, path, weight=weight):
             ok_path.append(path)
         else:
             break      

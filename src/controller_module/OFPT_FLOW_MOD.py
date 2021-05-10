@@ -2,7 +2,10 @@
 from controller_module import GLOBAL_VALUE 
 
 
-def send_ADD_FlowMod(self, mod):
+def send_ADD_FlowMod(mod):
+    """
+    這裡是低階發送FlowMod為了統計與紀錄所有flow entry
+    """
     datapath = mod.datapath
     OFPFlowMod = mod.__dict__
     table_id = OFPFlowMod["table_id"]
@@ -16,7 +19,7 @@ def send_ADD_FlowMod(self, mod):
 
     GLOBAL_VALUE.G.nodes[(datapath.id, None)
                     ]["FLOW_TABLE"][table_id][priority][str(match)] = mod
-    self.error_search_by_xid[datapath.id][mod.xid]=mod
+    GLOBAL_VALUE.error_search_by_xid[datapath.id][mod.xid]=mod
     datapath.send_msg(mod)
     #    return True
     return False

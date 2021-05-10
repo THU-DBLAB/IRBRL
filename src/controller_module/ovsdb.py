@@ -4,7 +4,7 @@ import time
 import logging
 import networkx as nx
 import json
-from utils import log, dict_tool
+from controller_module.utils import log, dict_tool
 from gui import gui
 from nested_dict import *
 

@@ -1,4 +1,4 @@
-eventlet==0.30.2
+eventlet
 #自己修補為了https://github.com/sphinx-doc/sphinx/pull/9179
 git+git://github.com/Lu-Yi-Hsun/sphinx@4.x
 sphinx-rtd-theme

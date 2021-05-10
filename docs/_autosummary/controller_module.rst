@@ -31,6 +31,8 @@
 
    controller_module.GLOBAL_VALUE
    controller_module.OFPT_FLOW_MOD
+   controller_module.OFPT_GROUP_MOD
+   controller_module.OFPT_PACKET_OUT
    controller_module.RL
    controller_module.dynamic_tc
    controller_module.log
