@@ -11,7 +11,8 @@ jupyter
 matplotlib
 numpy
 sphinx-automodapi
-ryu
+git+git://github.com/Lu-Yi-Hsun/ryu.git@master
+git+git://github.com/Lu-Yi-Hsun/sphinx@4.x
 networkx
 nested_dict
 zmq
