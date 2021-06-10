@@ -39,6 +39,7 @@
    controller_module.monitor_module
    controller_module.ovsdb
    controller_module.ovsdb2
+   controller_module.route_metrics
    controller_module.route_module
    controller_module.tui
    controller_module.utils

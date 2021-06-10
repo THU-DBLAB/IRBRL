@@ -1,10 +1,12 @@
 eventlet
 #自己修補為了https://github.com/sphinx-doc/sphinx/pull/9179
-git+git://github.com/Lu-Yi-Hsun/sphinx@4.x
+sphinx
+git+git://github.com/hoefling/sphinxcontrib-mermaid.git
+
 sphinx-rtd-theme
 pydata-sphinx-theme
 sphinx-autodoc-typehints
-nbsphinx
+#nbsphinx這個會跟sphinxcontrib-mermaid 衝突
 ipython
 jupytext
 jupyter

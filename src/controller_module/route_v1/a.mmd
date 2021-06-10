@@ -1,16 +1,10 @@
-sequenceDiagram
-Title: 多路徑動態路由基於hard_timeout
-autonumber
-交換機->>+控制器: ofp_packet_in(flow table發生table miss的封包) 
-    
-loop 被動模塊
-    控制器->>控制器: 依照封包的tos去選擇,不同Qos設計出來的拓樸權重,該權重利用強化學習優化
-
-
-控制器->>交換機: ofp_group_mod(如果有岔路就需要設定group entry)
-
-控制器->>交換機: ofp_flow_mod(設flow entry,如果有岔路就需要設定group id)
-end
-
- 
-控制器->>-交換機: ofp_packet_out(把封包送回去起點交換機的flow table))
+graph TD
+    Start --> 確保沒有其他線程正在設定dst_ip,tos的路徑
+    確保沒有其他線程正在設定dst_ip,tos的路徑-->|否|確保沒有其他線程正在設定dst_ip,tos的路徑
+    確保沒有其他線程正在設定dst_ip,tos的路徑-->|是|計算多條路權重合併
+    計算多條路權重合併-->刪除dst_ip與tos的所有路徑
+    刪除dst_ip與tos的所有路徑 -->  尋找所有岔路
+    尋找所有岔路 --> 設定所有group[設定所有group entry]
+    設定所有group[設定所有group entry] --> 設定非起點的flow[設定非起點的flow entry]
+    設定非起點的flow[設定非起點的flow entry] --> 設定起點的flow[設定起點的flow entry]
+    設定起點的flow[設定起點的flow entry] --> End

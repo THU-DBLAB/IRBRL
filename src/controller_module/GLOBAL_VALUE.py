@@ -22,8 +22,57 @@ OpELD_EtherType = 0x1105
 OpEQW_EtherType = 0x5157
 """Openflow Extend QoS Weight"""
 PATH = nested_dict()
+"""ffdd
+Tos(8bit)
+QoS
+bit 11     00       11      11
+    delay  jitter   loss    bandwidth
+priority是抽象網路切片 依靠Tos(8bit)0~255
+Tos*2
+__________________________________________________
+table:2結構
+        .
+        .以此類推
+        .
+priority:4 Tos:1 
+priority:3 Tos:1 備用路線
+
+priority:2 Tos:0 dst:10.0.0.1
+priority:1 Tos:0 dst:10.0.0.1 備用路線為了在動態路由 切換時的備用路線
+priority:0 負責找不道路徑去問控制器
+__________________________________________________
+
+利用vlan_id動態切換?
+
+起點交換機    priority:2  Tos:0 
+            priority:1  Tos:0  
+從頭
+-s4-s3
+|p1 p1
+s1-s2-s3  
+p2 p2
+p1 p1 p1
+::
+
+    GLOBAL_VALUE.PATH[dst][priority]|["cookie"]=<class 'int'>
+                            |["path"]=[[(2, 3), (2, None), (2, 2), (3, 3), (3, None), (3, 4)]]
+                            |["weight"][1,2]
+                            |["graph"]= nx.DiGraph()
+                            |["package"]["start"][封包]=time.time()
+                            |["package"]["end"][封包]=time.time()
+                            |["detect"]|["latency_ms"]:0~max
+                                        |["jitter_ms"]:0~max
+                                        |["bandwidth_bytes_per_s"]:0~max_bandwidth　重要!!這個代表封包傳送的頻寬
+                                        |["loss_percent"]:0~1%
+::
+                    
+"""
+
 MTU=1500
 ip_get_datapathid_port = nested_dict()
+
+reuse_cookie={}
+cookie=1
 
 G = nx.DiGraph()#: initial value: par1
 """有向拓樸,負責儲存整體網路狀態與拓樸
@@ -72,8 +121,9 @@ xid_sem=hub.Semaphore(1)
 """
 sadd
 """ 
-
-
+sem = hub.Semaphore(1)
+""
+barrier_lock={}
 """dd
 利用DiGraph抽象全雙工,並且直接呼叫nx.shortest_path(self.G,(交換機1,None),(交換機2,None),weight="weight")導出路由細節
 節點(Node)
@@ -104,6 +154,29 @@ len(ofp_multipart_type)==20
  
                                     
 """
+
+
+def get_cookie(dst,priority):
+    global cookie
+    # Semaphore(1)
+    # 表示一次只能有一個人進來拿cookie
+    # 類似mutex lock但是eventlet沒有mutex我就用Semaphore代替
+    #reuse_cookie={}
+    if PATH[dst][priority]["cookie"]!={}:    
+        return PATH[dst][priority]["cookie"]
+    else:
+        sem.acquire()
+        if len(reuse_cookie)==0:
+            _cookie = cookie  # 保證不會有兩個人拿到相同cookie
+            cookie = cookie+1  # FIXME 這個數值有最大值(2^32-1) 需要回收
+            #reuse_cookie[_cookie]=True
+        else:
+            _cookie=list(reuse_cookie.keys())[0] 
+            del reuse_cookie[_cookie]
+        PATH[dst][priority]["cookie"]=_cookie
+        sem.release()
+        return _cookie
+
 
 def get_xid(datapath_id):
     """

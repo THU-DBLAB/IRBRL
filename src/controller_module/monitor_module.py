@@ -18,28 +18,32 @@ import numpy as np
 
 from controller_module.utils import log, dict_tool
 from controller_module import GLOBAL_VALUE
-from controller_module import OFPT_FLOW_MOD,OFPT_PACKET_OUT
+from controller_module import OFPT_FLOW_MOD, OFPT_PACKET_OUT
 from controller_module.route_metrics import formula
-from controller_module.OFPT_PACKET_OUT import send_arp_packet 
+from controller_module.OFPT_PACKET_OUT import send_arp_packet
 CONF = cfg.CONF
 
 
 class MonitorModule(app_manager.RyuApp):
     OpELD_start_time = nested_dict()
     echo_latency = {}
-    monitor_thread = None 
+    monitor_thread = None
     delta = 3  # sec,using in _monitor() ,to control update speed
-    monitor_link_wait = 1
+    
     monitor_sent_opedl_packets = 50
     "一次發送多少個封包"
     monitor_each_opeld_extra_byte = 0  # self.MTU-16#max=
     "每個封包額外大小 最大數值為::py:attr:`~controller_module.GLOBAL_VALUE.MTU`-16(OPELD header size)"
     monitor_wait_opeld_back = 2  # sec 超過此時間的封包都會被當作遺失
     "超過此時間的封包都會被monitor當作遺失"
-    monitor_wait_update_path=10
+    monitor_wait_update_path = 10
+    set_weight_call_back_function = None
+    
+
+
     ARP_Table = {}  # for more hight speed
     "維護arp table"
-     
+    
 
     """
     負責更新統計網路狀態::py:attr:`~controller_module.GLOBAL_VALUE.G`
@@ -63,7 +67,7 @@ class MonitorModule(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(MonitorModule, self).__init__(*args, **kwargs)
         self.monitor_thread = hub.spawn(self.monitor)
-         
+
     def init_node(self, datapath):
         """
         初始化交換機節點在拓樸
@@ -111,6 +115,147 @@ class MonitorModule(app_manager.RyuApp):
         self.set_flow_table_0_control_and_except(datapath)
         self.set_flow_table_1(datapath)
         self.set_flow_table_2(datapath)
+        # !SECTION
+
+
+    # ────────────────────────────────────────────────────────────────────────────────
+    """ SECTION Asynchronous Messages
+        +-+-+-+-+-+-+-+-+-+-+-+-+ +-+-+-+-+-+-+-+-+
+        |A|s|y|n|c|h|r|o|n|o|u|s| |M|e|s|s|a|g|e|s|
+        +-+-+-+-+-+-+-+-+-+-+-+-+ +-+-+-+-+-+-+-+-+
+    """
+    # ────────────────────────────────────────────────────────────────────────────────
+    #SECTION OFPT_FLOW_REMOVED
+    @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
+    def _flow_removed_handler(self, ev):
+        """
+        處理flow entry刪除
+        """
+        msg = ev.msg
+        datapath = msg.datapath
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+        try:
+            # 刪除控制器紀錄的flow entry
+            del GLOBAL_VALUE.G.nodes[(datapath.id, None)]["FLOW_TABLE"][int(
+                msg.table_id)][int(msg.priority)][str(msg.match)]
+        except:
+            pass
+        ipv4_dst = msg.match.get("ipv4_dst")
+        GLOBAL_VALUE.sem.acquire()
+        if ipv4_dst != None:
+            # GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]
+            # print(type(msg.match),msg.match.get("ipv4_dst"))
+            # 當flow entry刪除 相應的group entry也要一起刪除
+            """
+            mod = ofp_parser.OFPGroupMod(
+                datapath, command=ofp.OFPGC_DELETE,group_id=msg.cookie)
+            datapath.send_msg(mod)
+            try:
+                del GLOBAL_VALUE.G.nodes[(
+                    datapath.id,None)]["GROUP_TABLE"][msg.cookie]
+            except:
+                pass
+            """
+            # self.reuse_cookie[msg.cookie]=True#回收cookie
+            # 當路徑上其中一個交換機flow entry刪除 就當作此路徑已經遺失 需要重新建立
+            for path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].copy():
+                for i in path[2::3]:
+                    set_datapath_id = i[0]
+                    if datapath.id == set_datapath_id:
+                        # print("刪除",path)
+                        if path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]:
+                            GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].remove(
+                                path)
+        GLOBAL_VALUE.sem.release()
+
+        if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
+            reason = 'IDLE TIMEOUT'
+        elif msg.reason == ofp.OFPRR_HARD_TIMEOUT:
+            reason = 'HARD TIMEOUT'
+        elif msg.reason == ofp.OFPRR_DELETE:
+            reason = 'DELETE'
+        elif msg.reason == ofp.OFPRR_GROUP_DELETE:
+            #print('GROUP DELETE!!!!!!!!!!!!!!!!!!!!!!')
+            reason = 'GROUP DELETE'
+
+            try:
+                del GLOBAL_VALUE.G.nodes[(
+                    datapath.id, None)]["GROUP_TABLE"][msg.cookie]
+            except:
+                pass
+        else:
+            reason = 'unknown'
+            """
+            print('OFPFlowRemoved received: '
+                            'table_id=%d reason=%s priority=%d '
+                            'idle_timeout=%d hard_timeout=%d cookie=%d '
+                            'match=%s stats=%s',
+                            msg.table_id, reason, msg.priority,
+                            msg.idle_timeout, msg.hard_timeout, msg.cookie,
+                            msg.match, msg.stats)
+            """
+
+    # SECTION OFPT_PORT_STATUS
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def _port_status_handler(self, ev):
+        """
+        當port被刪除
+        """
+        msg = ev.msg
+        datapath = msg.datapath
+        ofp = datapath.ofproto
+        ofp_port_state = msg.desc.state
+        data = dict_tool.class2dict(msg.desc)
+        data["update_time"] = time.time()
+        # print(data)
+        GLOBAL_VALUE.G.nodes[(datapath.id, None)
+                                ]["port"][msg.desc.port_no]["OFPMP_PORT_DESC"] = data
+        if msg.reason == ofp.OFPPR_ADD:
+            """ADD"""
+            pass
+
+        elif msg.reason == ofp.OFPPR_DELETE:
+            """DELETE"""
+
+            # doing storage all_port_duration_s_temp
+            try:
+                GLOBAL_VALUE.G.nodes[(datapath.id, None)]["all_port_duration_s_temp"] = int(GLOBAL_VALUE.G.nodes[(datapath.id, None)]["all_port_duration_s_temp"])+int(
+                    GLOBAL_VALUE.G.nodes[(datapath.id, None)]["port"][msg.desc.port_no]["OFPMP_PORT_STATS"]["duration_sec"])
+            except:
+                GLOBAL_VALUE.G.nodes[(datapath.id, None)
+                                        ]["all_port_duration_s_temp"] = 0
+
+            # NOTE Openflow Extend Port State
+            # difference with OF1.5 ofp_port_state
+            # Implementation add this to port state "0",define the port have been ""DELETE"" by OVSDB
+            # data["state"]
+            # Openflow Extend Port State= 0 ,sort name:OPEPS /*the port have been ""DELETE"" */
+            # OFPPS_LINK_DOWN = 1, /* No physical link present. */
+            # OFPPS_BLOCKED = 2, /* Port is blocked */
+            # OFPPS_LIVE = 4, /* Live for Fast Failover Group. */
+            #data["state"] = self.OpEPS
+            GLOBAL_VALUE.G.nodes[(datapath.id, None)
+                                    ]["port"][msg.desc.port_no]["OFPMP_PORT_DESC"] = data
+        elif msg.reason == ofp.OFPPR_MODIFY:
+            """MODIFY"""
+            if ofp_port_state == ofp.OFPPS_LINK_DOWN:
+                """OFPPS_LINK_DOWN"""
+                pass
+            elif ofp_port_state == ofp.OFPPS_BLOCKED:
+                """OFPPS_BLOCKED"""
+                pass
+                # del GLOBAL_VALUE.G.nodes[datapath.id]["port"][msg.desc.port_no]
+            elif ofp_port_state == ofp.OFPPS_LIVE:
+                """OFPPS_LIVE"""
+                pass
+                # GLOBAL_VALUE.G.nodes[datapath.id]["port"].update(msg.desc.port_no)
+            else:
+
+                pass
+        else:
+            reason = 'unknown'
+    # !SECTION
 
     def set_flow_table_0_control_and_except(self, datapath: ryu.controller.controller.Datapath):
         "負責在交換機flow table 0 過濾需要特殊處理的封包給控制器"
@@ -129,7 +274,8 @@ class MonitorModule(app_manager.RyuApp):
     def set_flow_table_1(self, datapath):
         "設定flow table 1 的flow entry"
         self.add_all_flow_to_table(datapath, 1, 2)
-    def table_1_change_update_package(self, datapath,in_port):
+
+    def table_1_change_update_package(self, datapath, in_port):
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
         match = parser.OFPMatch(in_port=in_port)
@@ -140,7 +286,7 @@ class MonitorModule(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=1,
                                 command=ofp.OFPFC_ADD, match=match, instructions=inst)
         OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
-        
+
     def set_flow_table_2(self, datapath):
         # FIXME 關於未知封包,可以嘗試實做buffer  max_len 或是buffer_id能加速? 請參考opnflow1.51-7.2.6.1 Output Action Structures
         "設定flow table 2 的flow entry"
@@ -210,7 +356,8 @@ class MonitorModule(app_manager.RyuApp):
         all_port_duration_s_temp = GLOBAL_VALUE.G.nodes[(
             datapath.id, None)]["all_port_duration_s_temp"]
         # get the list of "close port"
-        close_port = list(GLOBAL_VALUE.G.nodes[(datapath.id, None)]["port"].keys())
+        close_port = list(GLOBAL_VALUE.G.nodes[(
+            datapath.id, None)]["port"].keys())
         all_port_duration_s = 0
         for OFPPortStats in ev.msg.body:
             if OFPPortStats.port_no < ofp.OFPP_MAX:
@@ -247,17 +394,15 @@ class MonitorModule(app_manager.RyuApp):
 
                 close_port.remove(OFPPortStats.port_no)
         GLOBAL_VALUE.G.nodes[(datapath.id, None)
-                     ]["all_port_duration_s"] = all_port_duration_s
+                             ]["all_port_duration_s"] = all_port_duration_s
 
         # clear close port delta
         for close in close_port:
             GLOBAL_VALUE.G.nodes[(datapath.id, None)
-                         ]["port"][close]["OFPMP_PORT_STATS"]["rx_bytes_delta"] = 0
+                                 ]["port"][close]["OFPMP_PORT_STATS"]["rx_bytes_delta"] = 0
             GLOBAL_VALUE.G.nodes[(datapath.id, None)
-                         ]["port"][close]["OFPMP_PORT_STATS"]["tx_bytes_delta"] = 0
+                                 ]["port"][close]["OFPMP_PORT_STATS"]["tx_bytes_delta"] = 0
             pass
-
-
 
     def send_port_desc_stats_request(self, datapath):
         "跟交換機要port的規格資訊"
@@ -348,7 +493,8 @@ class MonitorModule(app_manager.RyuApp):
         if not 0 <= extra_byte <= GLOBAL_VALUE.MTU-min_opeld_size:
             #log.Global_Log[log_file_name].warning('extra_byte out of size')
             # max(min(maxn, n), minn)
-            extra_byte = max(min(GLOBAL_VALUE.MTU-min_opeld_size, extra_byte), 0)
+            extra_byte = max(
+                min(GLOBAL_VALUE.MTU-min_opeld_size, extra_byte), 0)
 
         opeld_header = pkt.data[0:opeld_header_size]
 
@@ -370,11 +516,13 @@ class MonitorModule(app_manager.RyuApp):
         for k in self.OpELD_start_time[datapath.id][out_port].keys():
             if k >= num_packets:
                 del self.OpELD_start_time[datapath.id][out_port][k]
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
         """
         非同步接收來自交換機OFPT_PACKET_IN message
         """
+        print("aaa")
         msg = ev.msg
         datapath = msg.datapath
         port = msg.match['in_port']
@@ -382,7 +530,7 @@ class MonitorModule(app_manager.RyuApp):
         pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
         if pkt_ethernet:
             if pkt_ethernet.ethertype == GLOBAL_VALUE.OpELD_EtherType:
-                # print("get",self.decode_eth_1105(pkt_ethernet.dst,pkt_ethernet.src))
+                print("get",self.decode_eth_1105(pkt_ethernet.dst,pkt_ethernet.src))
                 seq = int.from_bytes(msg.data[14:16], "big")
                 self.handle_opeld(datapath, port, pkt_ethernet, seq)
         else:
@@ -392,6 +540,30 @@ class MonitorModule(app_manager.RyuApp):
         if pkt_arp:
             # print("問")
             self.handle_arp(datapath, pkt_arp, port, msg.data)
+
+        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+        if pkt_ipv4:
+            # table 1 負責統計
+            if msg.table_id == 1:
+                self._handle_package_analysis(ev)
+
+    def _handle_package_analysis(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        pkt = packet.Packet(data=msg.data)
+        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+        src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
+        path_loc = "start" if datapath.id == src_datapath_id else "end"
+        # FIXME 這msg.data可以改murmurhas去改變
+
+        dscp = int(pkt_ipv4.tos) >> 2
+        GLOBAL_VALUE.PATH[pkt_ipv4.dst][dscp]["package"][path_loc][msg.data] = time.time(
+        )
+        for src, v in list(GLOBAL_VALUE.PATH.items()):
+            for dst, dst_priority_path in list(v.items()):
+                pass
+                # print(dst_priority_path["detect"])
+
     def handle_opeld(self, datapath, port, pkt_opeld, seq):
         # NOTE Topology maintain
         def init_edge(start_node_id, end_node_id):
@@ -437,16 +609,16 @@ class MonitorModule(app_manager.RyuApp):
         except:
             # FIXME :!!!!
             pass
+
     def handle_arp(self, datapath, pkt_arp, in_port, packet):
         def update_fome_arp_data(datapath, pkt_arp, in_port):
             # FIXME
-            self.table_1_change_update_package(datapath,in_port)
+            self.table_1_change_update_package(datapath, in_port)
             GLOBAL_VALUE.G.nodes[(
                 datapath.id, None)]["port"][in_port]["host"][pkt_arp.src_ip] = pkt_arp.src_mac
             self.ARP_Table[pkt_arp.src_ip] = pkt_arp.src_mac
             GLOBAL_VALUE.ip_get_datapathid_port[pkt_arp.src_ip]["datapath_id"] = datapath.id
             GLOBAL_VALUE.ip_get_datapathid_port[pkt_arp.src_ip]["port"] = in_port
- 
 
         # 避免廣播風暴會拒絕最後2個bytes==ARP_SEND_FROM_CONTROLLER
         last_two_bytes = packet[-2:]
@@ -465,12 +637,11 @@ class MonitorModule(app_manager.RyuApp):
                     OFPT_PACKET_OUT.arp_request_all(pkt_arp.dst_ip)
                     pass
             elif pkt_arp.opcode == arp.ARP_REPLY:
-                
                 update_fome_arp_data(datapath, pkt_arp, in_port)
-
             else:
                 # TODO HADLE EXPECTION
                 pass
+
     def send_echo_request(self, datapath):
         "控制器問交換機"
         ofp_parser = datapath.ofproto_parser
@@ -485,17 +656,17 @@ class MonitorModule(app_manager.RyuApp):
         try:
             # Round-trip delay time
             latency = now_timestamp - float(ev.msg.data)
-            self.echo_latency[ev.msg.datapath.id] = latency / 2  # End-to-end delay
+            # End-to-end delay
+            self.echo_latency[ev.msg.datapath.id] = latency / 2
         except:
             return
-    
-
 
     def monitor(self):
         hub.sleep(3)
         # 更新路徑統計
         def _update_path():
             while True:
+                
                 hub.sleep(self.monitor_wait_update_path)
                 for dst, v in list(GLOBAL_VALUE.PATH.items()):
                     for priority, dst_priority_path in list(v.items()):
@@ -512,8 +683,8 @@ class MonitorModule(app_manager.RyuApp):
                             all_timestamp.append(_start_time)
                             _delay = (_end_time-_start_time)  # s
                             latency.append(_delay)
-                        if all_timestamp==[]:
-                            continue   
+                        if all_timestamp == []:
+                            continue
                         delay_one_packet = abs(np.mean(latency)*1000)  # ms
                         jitter = abs(np.std(latency) * 1000)
                         all_bytes = 0
@@ -531,6 +702,7 @@ class MonitorModule(app_manager.RyuApp):
                     for dst, dst_priority_path in list(v.items()):
                         if "package" in GLOBAL_VALUE.PATH[dst][priority]:
                             del GLOBAL_VALUE.PATH[dst][priority]["package"]
+
         def decorator_node_iteration(func):
             def node_iteration():
                 while True:
@@ -540,9 +712,11 @@ class MonitorModule(app_manager.RyuApp):
                             func(datapath)
                     hub.sleep(self.delta)
             return node_iteration
+
         @decorator_node_iteration
         def _sent_echo(datapath):
             self.send_echo_request(datapath)
+
         @decorator_node_iteration
         def _update_switch(datapath):
             self.send_port_stats_request(datapath)
@@ -569,7 +743,7 @@ class MonitorModule(app_manager.RyuApp):
                             # if the port can working
                             if switch_data["port"][port_no]["OFPMP_PORT_DESC"]["state"] == ofproto_v1_5.OFPPS_LIVE:
                                 hub.spawn(self.send_opeld_packet,
-                                        switch_data["datapath"], port_no, extra_byte=self.monitor_each_opeld_extra_byte, num_packets=self.monitor_sent_opedl_packets)
+                                          switch_data["datapath"], port_no, extra_byte=self.monitor_each_opeld_extra_byte, num_packets=self.monitor_sent_opedl_packets)
             while True:
 
                 # 統計鏈路
@@ -621,7 +795,7 @@ class MonitorModule(app_manager.RyuApp):
                             # default one packet from A TO B latency millisecond(ms)
                             delay_one_packet = abs(np.mean(latency)*1000)
                             loss = 1-(get_packets_number /
-                                    self.monitor_sent_opedl_packets)
+                                      self.monitor_sent_opedl_packets)
                             # bytes_s=(get_packets_number*(self.monitor_each_opeld_extra_byte+16))/all_t
 
                             # available using bandwith bytes per second
@@ -646,9 +820,10 @@ class MonitorModule(app_manager.RyuApp):
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["low_delay"] = delay_one_packet
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["low_jitter"] = jitter
 
-
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["EIGRP"] = formula.EIGRP(
                                 (bw*8)/1000, curr_speed, tx_bytes_delta, delay_one_packet, loss)
+                            if self.set_weight_call_back_function != None:
+                                self.set_weight_call_back_function(GLOBAL_VALUE.G[edge_id1][edge_id2], jitter, loss, bw, delay_one_packet)
                             # FIXME 新增演算法 路線 取最小的頻寬 當最佳
 
                             # print(nx.shortest_path(GLOBAL_VALUE.G,(1,None),(2,None),weight="weight"),nx.shortest_path_length(GLOBAL_VALUE.G,(1,None),(2,None),weight="weight"))
@@ -661,3 +836,37 @@ class MonitorModule(app_manager.RyuApp):
         self._update_switch_thread = hub.spawn(_update_switch)
         self._update_link_thread = hub.spawn(_update_link)
         self._update_path_thread = hub.spawn(_update_path)
+
+    @set_ev_cls(ofp_event.EventOFPErrorMsg, [HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def error_msg_handler(self, ev):
+        "負責處理所有錯誤訊息"
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = msg.datapath.ofproto
+        if msg.type == ofproto.OFPET_FLOW_MOD_FAILED:
+            # 這裡就是要設定flow entry但是失敗了 所以需要刪除
+            # 因為dict做迴圈都需要複製,防止執行時突然被新插入導致迴圈會錯亂拉QQ
+            _G = GLOBAL_VALUE.G.copy()
+            _FLOW_TABLE = _G.nodes[(datapath.id, None)]["FLOW_TABLE"]
+            for table_id in _FLOW_TABLE:
+                for priority in _FLOW_TABLE[table_id]:
+                    for match in _FLOW_TABLE[table_id][priority]:
+                        mod = _FLOW_TABLE[table_id][priority][match]
+                        # 抓到了你這個flow entry設定錯誤 要刪除紀錄喔
+                        if mod.xid == msg.xid:
+                            del GLOBAL_VALUE.G.nodes[(
+                                datapath.id, None)]["FLOW_TABLE"][table_id][priority][match]
+
+        elif msg.type == ofproto.OFPET_GROUP_MOD_FAILED:
+            pass
+         
+        #print("OFPErrorMsg received:", msg.type, msg.code, msg.xid)
+        print("___________OFPErrorMsg received_______________")
+        print(ofproto.ofp_error_code_to_str(msg.type, msg.code))
+        print(datapath.id)
+        print(GLOBAL_VALUE.error_search_by_xid[datapath.id][msg.xid])
+        print("__________________________")
+        print("\n")
+        
+        self.stop()
+        #print(msg.data.decode("utf-8"))

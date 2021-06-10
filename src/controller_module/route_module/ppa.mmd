@@ -1,0 +1,16 @@
+sequenceDiagram
+Title: 多路徑動態路由基於hard_timeout
+autonumber
+交換機->>+控制器: ofp_packet_in(flow table發生table miss的封包) 
+    
+loop 被動模塊
+    控制器->>控制器: 依照封包的tos去選擇,不同Qos設計出來的拓樸權重,該權重利用強化學習優化
+
+
+控制器->>交換機: ofp_group_mod(如果有岔路就需要設定group entry)
+
+控制器->>交換機: ofp_flow_mod(設flow entry,如果有岔路就需要設定group id)
+end
+
+ 
+控制器->>-交換機: ofp_packet_out(把封包送回去起點交換機的flow table))

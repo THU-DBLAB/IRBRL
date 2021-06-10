@@ -1,6 +1,5 @@
 
-from ryu.lib.packet import ethernet, arp
-from ryu.lib.packet import ether_types
+from ryu.lib.packet import ether_types,ethernet, arp, icmp, ipv4,lldp
 from ryu.ofproto import ofproto_v1_5
 from ryu.lib.packet import packet
 from ryu.lib import hub
@@ -37,4 +36,60 @@ def send_arp_packet(datapath, out_port, eth_src_mac, eth_dst_mac, arp_opcode, ar
 
     out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                 match=match, actions=actions, data=data)
+    datapath.send_msg(out)
+def Packout_to_FlowTable(tmp_datapath,data):
+    ofp = tmp_datapath.ofproto
+    parser = tmp_datapath.ofproto_parser
+    match = tmp_datapath.ofproto_parser.OFPMatch(
+        in_port=ofp.OFPP_CONTROLLER)
+    actions = [parser.OFPActionOutput(port=ofp.OFPP_TABLE)]
+    out = parser.OFPPacketOut(datapath=tmp_datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                match=match, data=data,actions=actions)
+    tmp_datapath.send_msg(out)
+
+
+
+def send_icmp_packet( datapath, src="255.255.255", dst="255.255.255"):
+    ofp = datapath.ofproto
+    parser = datapath.ofproto_parser
+    pkt = packet.Packet()
+    pkt.add_protocol(ethernet.ethernet(
+        ethertype=ether_types.ETH_TYPE_IP))
+    pkt.add_protocol(ipv4.ipv4(src=datapath.id, dst=dst, proto=1))
+    pkt.add_protocol(
+        icmp.icmp(type_=icmp.ICMP_ECHO_REQUEST, code=0, csum=0))
+    pkt.serialize()
+    data = pkt.data
+    match = datapath.ofproto_parser.OFPMatch(
+        in_port=ofp.OFPP_CONTROLLER)
+    actions = [parser.OFPActionOutput(ofp.OFPP_ALL)]
+    out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
+                                match=match, actions=actions, data=data)
+    datapath.send_msg(out)
+# NOTE send_lldp_packet
+
+def send_lldp_packet(datapath, port_no, data_size):
+    # data_size 0~1440
+    ofp = datapath.ofproto
+    parser = datapath.ofproto_parser
+    pkt = packet.Packet()
+    pkt.add_protocol(ethernet.ethernet(
+        ethertype=ether_types.ETH_TYPE_LLDP))
+    tlv_chassis_id = lldp.ChassisID(
+        subtype=lldp.ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id=str(datapath.id))
+    tlv_port_id = lldp.PortID(
+        subtype=lldp.PortID.SUB_LOCALLY_ASSIGNED, port_id=str(port_no))
+    tlv_ttl = lldp.TTL(ttl=10)
+    tlv_end = lldp.End()
+    tlvs = (tlv_chassis_id, tlv_port_id, tlv_ttl, tlv_end)
+    pkt.add_protocol(lldp.lldp(tlvs))
+    pkt.serialize()
+    data = pkt.data  # 60bytes
+    # bytes in one packet ,can set 0~1440 because MTU Max is 1500
+    data = data+bytearray(1440)
+    actions = [parser.OFPActionOutput(port=port_no)]
+    match = datapath.ofproto_parser.OFPMatch(
+        in_port=datapath.ofproto.OFPP_CONTROLLER)
+    out = parser.OFPPacketOut(
+        datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, match=match, actions=actions, data=data)
     datapath.send_msg(out)

@@ -33,11 +33,12 @@ extensions = [
     'sphinx.ext.intersphinx',  # Link to other project's documentation (see mapping below)
     'sphinx.ext.viewcode',  # Add a link to the Python source code for classes, functions etc.
     'sphinx_autodoc_typehints', # Automatically document param types (less noise in class signature)
-    'nbsphinx',  # Integrate Jupyter Notebooks and Sphinx
+    #'nbsphinx',  # Integrate Jupyter Notebooks and Sphinx這個會跟sphinxcontrib.mermaid 
     'IPython.sphinxext.ipython_console_highlighting',
     'sphinx_automodapi.automodapi',
     'sphinx_automodapi.smart_resolver',
-    'recommonmark'
+    'recommonmark',
+    'sphinxcontrib.mermaid'
 ]
 
 source_suffix = {

@@ -1,0 +1,342 @@
+import ryu
+from ryu.base import app_manager
+from ryu.ofproto import ofproto_v1_5
+# for RYU decorator doing catch Event
+from ryu.controller.handler import set_ev_cls
+from ryu.controller.handler import HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.controller import ofp_event
+from ryu.lib.packet import ethernet, arp, icmp, ipv4
+from ryu.lib.packet import ether_types, in_proto, icmpv6
+from ryu.lib.packet import lldp
+from ryu.lib.packet import packet
+from ryu.utils import hex_array
+from ryu.lib import hub
+from ryu import cfg
+import time
+from nested_dict import *
+import numpy as np
+import networkx as nx
+from networkx.classes.function import path_weight
+from controller_module.utils import log, dict_tool
+from controller_module import GLOBAL_VALUE
+from controller_module import OFPT_FLOW_MOD,OFPT_PACKET_OUT,OFPT_GROUP_MOD
+from controller_module.route_metrics import formula
+
+from controller_module.route_module import path_select
+from controller_module.route_module import set_multi_path
+from controller_module.OFPT_PACKET_OUT import send_arp_packet,Packout_to_FlowTable
+CONF = cfg.CONF
+
+
+class RouteModule(app_manager.RyuApp):
+    """負責處理被動路由與動態路由
+
+ 
+
+     
+  
+    """
+    OFP_VERSIONS = [ofproto_v1_5.OFP_VERSION]
+    route_control_sem=hub.Semaphore(1)
+    "一次只能有一個程式掌控網路"
+    check_route_is_process_SEM = hub.Semaphore(1)
+    _handle_route_thread=[]
+    check_route_is_process=nested_dict(3,dict)
+    setting_multi_route_path_SEM= hub.Semaphore(1)
+    Qos_Select_Weight_Call_Back=None
+
+
+    path_selecter=path_select.k_shortest_path_loop_free_version
+
+    def __init__(self, *args, **kwargs):
+        
+        print(args,kwargs)
+       
+        print(args)
+        super(RouteModule, self).__init__(*args, **kwargs)
+    def _check_know_ip_place(self, ip):
+        # 確保此ip位置知道在那
+        if GLOBAL_VALUE.ip_get_datapathid_port[ip]["datapath_id"] == {} or GLOBAL_VALUE.ip_get_datapathid_port[ip]["port"]=={}:
+            # 因為不知道此目的地 ip在哪個交換機的哪個port,所以需要暴力arp到處問
+            OFPT_PACKET_OUT.arp_request_all(ip)
+            # FIXME 這裡要注意迴圈引發問題 可能需要異步處理,arp只發一次
+            # 這裡等待問完的結果
+            print("check")
+            while GLOBAL_VALUE.ip_get_datapathid_port[ip]["datapath_id"] == {} or GLOBAL_VALUE.ip_get_datapathid_port[ip]["port"]=={}:
+                hub.sleep(0)
+                # time.sleep(0.01)#如果沒有sleep會導致 整個系統停擺,可以有其他寫法？
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        """
+        非同步接收來自交換機OFPT_PACKET_IN message
+        """
+        msg = ev.msg
+        datapath = msg.datapath
+        port = msg.match['in_port']
+        pkt = packet.Packet(data=msg.data)
+        pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
+        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+        if pkt_ipv4:
+            # table 2負責路由
+            if msg.table_id == 2:
+                # 想要路由但不知道路,我們需要幫它,這屬於被動路由
+                self._handle_route_thread.append(hub.spawn(
+                    self.handle_route, datapath=datapath, port=port, msg=msg))   
+    def get_alog_name_by_tos(self,tos):
+        "負責根據tos去選擇演算法"
+        if self.Qos_Select_Weight_Call_Back!=None:
+            alog=self.Qos_Select_Weight_Call_Back(tos)
+            return alog
+        #default的演算法
+        alog="weight"
+        if tos==0:
+            alog = "low_delay"
+        else:
+            alog="low_jitter"
+     
+    def handle_route(self, datapath, port, msg):
+         
+        # 下面這行再做,當不知道ip在哪個port與交換機,就需要利用arp prop序詢問
+        print("------------")
+        print("被動路由")
+        print("\n\n")
+        self.route_control_sem.acquire()
+        data = msg.data
+        in_port = msg.match['in_port']
+
+        pkt = packet.Packet(data=data)
+        pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
+        pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+        alog = "low_delay"  # EIGRP
+        
+        dscp=pkt_ipv4.tos>>2
+        priority=(2*dscp)+1
+        alog=self.get_alog_name_by_tos(dscp)
+         
+
+        self._check_know_ip_place(pkt_ipv4.src)
+        self._check_know_ip_place(pkt_ipv4.dst)
+        # 拿出目的地交換機id
+        dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
+        # 拿出目的地port number
+        dst_port = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.dst]["port"]
+        src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
+        # 拿出目的地port number
+        src_port = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["port"]
+        #為了避免多個相同src_ip dst_ip pkt_ipv4.tos封包同時處理路由
+        #確認是否已經設定完成
+        if self.check_route_setting(src_datapath_id,pkt_ipv4,priority):
+            tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
+            Packout_to_FlowTable(tmp_datapath,data)
+            self.route_control_sem.release()
+            return
+            
+        self.check_route_is_process_SEM.acquire()
+        process_route=False
+        print(src_datapath_id,pkt_ipv4.dst,pkt_ipv4.tos)
+
+        print(GLOBAL_VALUE.ip_get_datapathid_port)
+
+        print(self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos],pkt_ipv4.dst,pkt_ipv4.tos)
+        if self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]=={}:
+            #當還沒開始處理從src_datapath_id到pkt_ipv4.dst的qos:pkt_ipv4.tos的路線
+            #就搶下來做
+            self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]["process"]=True
+            process_route=True
+            #print(self.check_route_is_process[pkt_ipv4.dst][pkt_ipv4.tos],pkt_ipv4.dst,pkt_ipv4.tos)
+        self.check_route_is_process_SEM.release()
+        if process_route==False:
+            
+            #會進來這裡是因為控制器已經在處理這個路由 所以不需要重新處理一次
+            #但是交換機一直上來問,等到路徑設定完成才轉送這些
+            while self.check_route_setting(src_datapath_id,pkt_ipv4,priority)==False:
+                hub.sleep(0)
+
+            tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
+            Packout_to_FlowTable(tmp_datapath,data)
+            self.route_control_sem.release()
+            return
+        #print("有")
+        # 選出單一路徑
+        prev_G=Get_NOW_GRAPH(self,pkt_ipv4.dst,priority)
+        route_path_list_go,_=self.path_selecter(4,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G)
+        weight_list_go = [1 for _ in range(len(route_path_list_go))]
+        set_multi_path.setting_multi_route_path(self,route_path_list_go, weight_list_go, pkt_ipv4.dst,idle_timeout=10,tos=pkt_ipv4.tos,prev_path=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"],prev_weight=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["weight"])
+        # 上面只是規劃好路徑 這裡要幫 上來控制器詢問的`迷途小封包` 指引,防止等待rto等等...
+        # 你可以測試下面刪除會導致每次pingall都要等待
+        # 確保是有找到f路徑
+        #把送上來未知的封包重新送回去路徑的起始點
+        pkt = packet.Packet(data=data)
+        tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
+        Packout_to_FlowTable(tmp_datapath,data)
+        self.check_route_is_process_SEM.acquire()
+        del self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]["process"]
+        self.check_route_is_process_SEM.release()
+        self.route_control_sem.release()
+    def check_route_setting(self,src_datapath_id,pkt_ipv4,priority):
+        for path in GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"]:
+            i=path[2]
+            set_datapath_id = i[0]
+            if src_datapath_id==set_datapath_id:
+                 
+                return True
+        return False
+    def clear_multi_route_path(self,dst, priority):
+        #刪除光光
+        set_switch_for_barrier=set()
+        if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:
+            cookie=GLOBAL_VALUE.PATH[dst][priority]["cookie"]
+            #保證cookie 0不會倍刪除
+            if cookie==0:
+                return
+            for path in GLOBAL_VALUE.PATH[dst][priority]["path"]:
+                for i in path[2::3]:
+                    set_datapath_id = i[0]
+                    tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
+                    ofp = tmp_datapath.ofproto
+                    parser = tmp_datapath.ofproto_parser
+                    """
+                    mod = parser.OFPGroupMod(tmp_datapath, command=ofp.OFPGC_DELETE,group_id=cookie)
+                     
+                    tmp_datapath.send_msg(mod)
+                    """
+                    match = parser.OFPMatch()
+                    mod = parser.OFPFlowMod(datapath=tmp_datapath, table_id=ofp.OFPTT_ALL,
+                                            command=ofp.OFPFC_DELETE, out_port=ofp.OFPP_ANY, out_group=ofp.OFPG_ANY,
+                                            match=match, cookie=cookie, cookie_mask=0xffffffffffffffff
+                                            )
+                    tmp_datapath.send_msg(mod)
+                    set_switch_for_barrier.add(tmp_datapath)
+        for tmp_datapath in set_switch_for_barrier:
+            self.wait_finish_switch_BARRIER_finish(tmp_datapath)
+        #del GLOBAL_VALUE.PATH[dst][priority]["path"]
+
+    def send_barrier_request(self, datapath,xid=None):
+        
+        ofp_parser = datapath.ofproto_parser
+        req = ofp_parser.OFPBarrierRequest(datapath)
+        req.xid=xid
+        datapath.send_msg(req)
+    #當交換機已經完成先前的設定才會回傳這個
+    @set_ev_cls(ofp_event.EventOFPBarrierReply, MAIN_DISPATCHER)
+    def barrier_reply_handler(self, ev):
+        #print(ev.msg.)
+        msg = ev.msg
+        datapath = msg.datapath
+        GLOBAL_VALUE.barrier_lock[datapath.id]=False
+    def wait_finish_switch_BARRIER_finish(self,datapath):
+        GLOBAL_VALUE.barrier_lock[datapath.id]=True
+        self.send_barrier_request(datapath)
+        while GLOBAL_VALUE.barrier_lock[datapath.id]:
+            hub.sleep(0)
+ 
+     
+    
+def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_dst, ipv4_src):
+        #利用vlan tag把每個simple path切開
+        #舉例有5條路線
+        #起始:一開始起點交換機就要從group entry裡面5個bucket選擇一個bucket,每個bucket代表某一條simple path,bucket做三個動作 1."Push VLAN header" 2."Set-Field VLAN_VID value"3."Output port" VLAN_VID為此simple path push vlan tag
+        #中間:路由根據src dst vlan_id 去路由
+        #最後:終點交換機要pop vlan tag才丟給host
+        """
+        非常重要要注意要清楚 vlan運作模式
+        不管有沒有塞入vlan,ethertype永遠不變,只會向後擠
+        還沒塞入vlan
+        |dst-mac|src-mac|ethertype|payload
+        塞入vlan
+        |dst-mac|src-mac|0x8100|tci|ethertype|payload
+        """
+        priority=2
+        idle_timeout=5
+        _cookie = GLOBAL_VALUE.get_cookie()
+        vlan_tag=1
+        for path in route_path_list:
+            vlan_tci=ofproto_v1_5.OFPVID_PRESENT+vlan_tag#spec openflow1.5.1 p.82,你要多加這個openvswitch才知道你要設定vlan_vid
+            #path:[(1, 4), (1, None), (1, 2), (3, 1), (3, None), (3, 2), (4, 2), (4, None), (4, 3)]
+            for index,i in enumerate(path[5::3]):
+                set_datapath_id = i[0]
+                set_out_port = i[1]
+                tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
+                ofp = tmp_datapath.ofproto
+                parser = tmp_datapath.ofproto_parser  
+                if index==(len(path)/3)-2:
+                    #最後
+                    #print("最後")
+                    match = parser.OFPMatch(
+                    eth_type=ether_types.ETH_TYPE_IP, vlan_vid=vlan_tci,ipv4_src=ipv4_src,ipv4_dst=ipv4_dst)
+                    action_set = [parser.OFPActionPopVlan(),parser.OFPActionOutput(port=set_out_port)]
+                    instruction = [parser.OFPInstructionActions(
+                        ofp.OFPIT_APPLY_ACTIONS, action_set)]
+                    mod = parser.OFPFlowMod(datapath=tmp_datapath,
+                                            priority=priority, table_id=2,
+                                            command=ofp.OFPFC_ADD,
+                                            match=match, cookie=_cookie,
+                                            instructions=instruction, idle_timeout=idle_timeout
+                                            )
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
+                else:
+                    #中間
+                    #print("中間")
+                    match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, vlan_vid=vlan_tci,ipv4_dst=ipv4_dst,ipv4_src=ipv4_src)
+                    action = [parser.OFPActionOutput(port=set_out_port)]
+                    instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action)]
+                    mod = parser.OFPFlowMod(datapath=tmp_datapath,
+                                            priority=priority, table_id=2,
+                                            command=ofp.OFPFC_ADD,
+                                            match=match, cookie=_cookie,
+                                            instructions=instruction, idle_timeout=idle_timeout
+                                            )
+                    OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
+            vlan_tag=vlan_tag+1
+        #起始
+        port_list=[]
+        vlan_tag=[]
+        vlan_index=1
+        for path in route_path_list:
+            i=path[2]
+            set_datapath_id = i[0]
+            set_out_port = i[1]
+            port_list.append(set_out_port)
+            tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
+            vlan_tag.append(vlan_index)
+            vlan_index=vlan_index+1
+            #保證剛才路徑設定完成
+            self.wait_finish_switch_BARRIER_finish(tmp_datapath)
+        ofp = tmp_datapath.ofproto
+        parser = tmp_datapath.ofproto_parser
+        send_add_group_mod(self,tmp_datapath, port_list, weight_list,vlan_tag_list=vlan_tag,group_id=_cookie)
+
+        #確保先前的所有設定已經完成,才能開始設定起點的flow table
+        #如果不確保會導致封包已經開始傳送但是路徑尚未設定完成的錯誤
+
+        #保證group 設定完成
+        self.wait_finish_switch_BARRIER_finish(tmp_datapath)
+        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,ipv4_dst=ipv4_dst,ipv4_src=ipv4_src)
+        action = [parser.OFPActionGroup(group_id=_cookie)]
+        instruction = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, action)]
+        mod = parser.OFPFlowMod(datapath=tmp_datapath,
+                                priority=priority, table_id=2,
+                                command=ofp.OFPFC_ADD,
+                                match=match, cookie=_cookie,
+                                instructions=instruction, idle_timeout=idle_timeout
+                                )
+        OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
+        #上面都完成就紀錄
+         
+        GLOBAL_VALUE.PATH[ipv4_src][ipv4_dst]["cookie"][_cookie] = route_path_list
+        #GLOBAL_VALUE.PATH[ipv4_src][ipv4_dst]["proitity"][priority] = _cookie
+
+ 
+
+def Get_NOW_GRAPH(self,dst,priority):
+    check_G = nx.DiGraph()
+    if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:
+        for path,weight in zip(GLOBAL_VALUE.PATH[dst][priority]["path"],GLOBAL_VALUE.PATH[dst][priority]["weight"]):
+            prev_node=None
+            for node in path:  
+                if prev_node!=None:
+                    check_G.add_edge(prev_node, node, weight=1)
+                prev_node=node 
+    return check_G
+
+ 
