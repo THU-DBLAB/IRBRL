@@ -21,7 +21,7 @@ from controller_module.utils import log, dict_tool
 from controller_module import GLOBAL_VALUE
 from controller_module import OFPT_FLOW_MOD,OFPT_PACKET_OUT,OFPT_GROUP_MOD
 from controller_module.route_metrics import formula
-
+from controller_module.route_module import prioritylib
 from controller_module.route_module import path_select
 from controller_module.route_module import set_multi_path
 from controller_module.OFPT_PACKET_OUT import send_arp_packet,Packout_to_FlowTable
@@ -30,29 +30,39 @@ CONF = cfg.CONF
 
 class RouteModule(app_manager.RyuApp):
     """負責處理被動路由與動態路由
-
  
+    多路徑路由(src->dst)可能的問題
+        當多條路徑 並不是每條路徑都會均勻的被走過導致某些路線會idle-timeout,路線被清除,如果剛好路線
 
-     
-  
+    .. mermaid::
+
+        graph TD
+            Start --> 確保沒有其他線程正在設定dst_ip,tos的路徑
+            確保沒有其他線程正在設定dst_ip,tos的路徑-->|否|確保沒有其他線程正在設定dst_ip,tos的路徑
+            確保沒有其他線程正在設定dst_ip,tos的路徑-->|是|計算多條路權重合併
+            計算多條路權重合併-->刪除dst_ip與tos的所有路徑
+            刪除dst_ip與tos的所有路徑 -->  尋找所有岔路
+            尋找所有岔路 --> 設定所有group[設定所有group entry]
+            設定所有group[設定所有group entry] --> 設定非起點的flow[設定非起點的flow entry]
+            設定非起點的flow[設定非起點的flow entry] --> 設定起點的flow[設定起點的flow entry]
+            設定起點的flow[設定起點的flow entry] --> End
     """
     OFP_VERSIONS = [ofproto_v1_5.OFP_VERSION]
-    route_control_sem=hub.Semaphore(1)
+   
     "一次只能有一個程式掌控網路"
-    check_route_is_process_SEM = hub.Semaphore(1)
-    _handle_route_thread=[]
-    check_route_is_process=nested_dict(3,dict)
-    setting_multi_route_path_SEM= hub.Semaphore(1)
+ 
     Qos_Select_Weight_Call_Back=None
 
-
-    path_selecter=path_select.k_shortest_path_loop_free_version
+    #這裡可以控制你要使用哪種路線選擇器
+    path_selecter=None#path_select.k_shortest_path_loop_free_version
+    #這裡可以控制你要用什麼機制動態更新
+    Setting_Multi_Route_Path=set_multi_path.setting_multi_route_path
 
     def __init__(self, *args, **kwargs):
         
-        print(args,kwargs)
-       
-        print(args)
+        
+        self._active_route_thread = hub.spawn(self.active_route)
+        
         super(RouteModule, self).__init__(*args, **kwargs)
     def _check_know_ip_place(self, ip):
         # 確保此ip位置知道在那
@@ -61,7 +71,7 @@ class RouteModule(app_manager.RyuApp):
             OFPT_PACKET_OUT.arp_request_all(ip)
             # FIXME 這裡要注意迴圈引發問題 可能需要異步處理,arp只發一次
             # 這裡等待問完的結果
-            print("check")
+            #print("check")
             while GLOBAL_VALUE.ip_get_datapathid_port[ip]["datapath_id"] == {} or GLOBAL_VALUE.ip_get_datapathid_port[ip]["port"]=={}:
                 hub.sleep(0)
                 # time.sleep(0.01)#如果沒有sleep會導致 整個系統停擺,可以有其他寫法？
@@ -72,6 +82,7 @@ class RouteModule(app_manager.RyuApp):
         """
         msg = ev.msg
         datapath = msg.datapath
+        
         port = msg.match['in_port']
         pkt = packet.Packet(data=msg.data)
         pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
@@ -80,42 +91,43 @@ class RouteModule(app_manager.RyuApp):
             # table 2負責路由
             if msg.table_id == 2:
                 # 想要路由但不知道路,我們需要幫它,這屬於被動路由
-                self._handle_route_thread.append(hub.spawn(
-                    self.handle_route, datapath=datapath, port=port, msg=msg))   
-    def get_alog_name_by_tos(self,tos):
+                hub.spawn(self.handle_route, datapath=datapath, port=port, msg=msg)  
+    def get_alog_name_by_tos(self,dscp):
         "負責根據tos去選擇演算法"
         if self.Qos_Select_Weight_Call_Back!=None:
-            alog=self.Qos_Select_Weight_Call_Back(tos)
+            alog=self.Qos_Select_Weight_Call_Back(dscp)
             return alog
         #default的演算法
         alog="weight"
-        if tos==0:
+        if dscp==0:
             alog = "low_delay"
         else:
             alog="low_jitter"
      
     def handle_route(self, datapath, port, msg):
-         
+        _start_time=time.time()
         # 下面這行再做,當不知道ip在哪個port與交換機,就需要利用arp prop序詢問
-        print("------------")
-        print("被動路由")
+        print("------handle_route------")
+         
         print("\n\n")
-        self.route_control_sem.acquire()
+        
+        GLOBAL_VALUE.route_control_sem.acquire()
         data = msg.data
         in_port = msg.match['in_port']
 
         pkt = packet.Packet(data=data)
         pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
-        alog = "low_delay"  # EIGRP
+        #alog = "low_delay"  # EIGRP
+        print("被動路由", pkt_ipv4.src,"->",pkt_ipv4.dst,"優先權",pkt_ipv4.tos,bin(pkt_ipv4.tos))
         
-        dscp=pkt_ipv4.tos>>2
-        priority=(2*dscp)+1
-        alog=self.get_alog_name_by_tos(dscp)
+        priority,dscp=prioritylib.tos_base(pkt_ipv4.tos)
+        #alog=self.get_alog_name_by_tos(dscp)
          
-
+        #確保知道此ip的位置
         self._check_know_ip_place(pkt_ipv4.src)
         self._check_know_ip_place(pkt_ipv4.dst)
+
         # 拿出目的地交換機id
         dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
         # 拿出目的地port number
@@ -123,66 +135,69 @@ class RouteModule(app_manager.RyuApp):
         src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
         # 拿出目的地port number
         src_port = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["port"]
-        #為了避免多個相同src_ip dst_ip pkt_ipv4.tos封包同時處理路由
-        #確認是否已經設定完成
+        """
+        在控制器的Queue有可能塞很多,需要路由到相同目的地的封包
+        舉例
+            兩個封包想要到達10.0.0.1,但是FLOW TABLE沒有設定,所以會轉送到控制器
+            控制器的Queue上封包1,封包2都是要到10.0.0.1
+            控制器看到封包1需要設定路線就開始處理
+            此時FLOW TABLE已經知道如何轉送10.0.0.1
+            但是控制器看到封包2又需要設定路線
+            這樣會導致被動模塊頻繁更改路由,為了分工,被動模塊只負責設定未知路線的封包,動態路由只動態改變已設定好的路線
+            為了避免重複設定與破壞分工,所以這裡負責確認路線是否已經設定完成就直接轉送
+        """
+        print("確認路線已經設定完成了嗎?")
         if self.check_route_setting(src_datapath_id,pkt_ipv4,priority):
             tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
             Packout_to_FlowTable(tmp_datapath,data)
-            self.route_control_sem.release()
+            print("路線早已設定完成封包直接轉送回交換機")
+             
+            GLOBAL_VALUE.route_control_sem.release()#離開要補釋放資源
             return
-            
-        self.check_route_is_process_SEM.acquire()
-        process_route=False
-        print(src_datapath_id,pkt_ipv4.dst,pkt_ipv4.tos)
-
-        print(GLOBAL_VALUE.ip_get_datapathid_port)
-
-        print(self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos],pkt_ipv4.dst,pkt_ipv4.tos)
-        if self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]=={}:
-            #當還沒開始處理從src_datapath_id到pkt_ipv4.dst的qos:pkt_ipv4.tos的路線
-            #就搶下來做
-            self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]["process"]=True
-            process_route=True
-            #print(self.check_route_is_process[pkt_ipv4.dst][pkt_ipv4.tos],pkt_ipv4.dst,pkt_ipv4.tos)
-        self.check_route_is_process_SEM.release()
-        if process_route==False:
-            
-            #會進來這裡是因為控制器已經在處理這個路由 所以不需要重新處理一次
-            #但是交換機一直上來問,等到路徑設定完成才轉送這些
-            while self.check_route_setting(src_datapath_id,pkt_ipv4,priority)==False:
-                hub.sleep(0)
-
-            tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
-            Packout_to_FlowTable(tmp_datapath,data)
-            self.route_control_sem.release()
-            return
+        print("路線還沒設定,準備開始設定")
         #print("有")
         # 選出單一路徑
+        print("拿出原先到達",pkt_ipv4.dst,"所有路徑")
         prev_G=Get_NOW_GRAPH(self,pkt_ipv4.dst,priority)
-        route_path_list_go,_=self.path_selecter(4,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G)
-        weight_list_go = [1 for _ in range(len(route_path_list_go))]
-        set_multi_path.setting_multi_route_path(self,route_path_list_go, weight_list_go, pkt_ipv4.dst,idle_timeout=10,tos=pkt_ipv4.tos,prev_path=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"],prev_weight=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["weight"])
+        print("拿到原先所有路徑加上後來新增的路徑並且確保不會發生LOOP")
+        route_path_list_go,_=self.path_selecter(GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G)
+        print("確認是否有找到路徑",route_path_list_go)
+        #發生找不道路徑
+        if route_path_list_go==None:
+            #找不到路徑 直接讓封包遺失
+            GLOBAL_VALUE.route_control_sem.release()#離開要補釋放資源
+            print("找不到路徑 任由封包遺失 handle_route離開")
+            return
+
+        weight_list_go = [1 for _ in range(len(route_path_list_go))]#權重全部1代表如果有多路徑 每條路線流量分配相等
+        #print(GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"])
+        print("handle_route 開始設定路徑-----------\n\n")
+        self.Setting_Multi_Route_Path(route_path_list_go, weight_list_go, pkt_ipv4.dst,idle_timeout=GLOBAL_VALUE.FLOW_ENTRY_IDLE_TIMEOUT,tos=pkt_ipv4.tos,prev_path=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"],prev_weight=GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["weight"])
         # 上面只是規劃好路徑 這裡要幫 上來控制器詢問的`迷途小封包` 指引,防止等待rto等等...
         # 你可以測試下面刪除會導致每次pingall都要等待
         # 確保是有找到f路徑
         #把送上來未知的封包重新送回去路徑的起始點
         pkt = packet.Packet(data=data)
         tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
+        print("把上來詢問控制器的封包轉送",tmp_datapath.id)
         Packout_to_FlowTable(tmp_datapath,data)
-        self.check_route_is_process_SEM.acquire()
-        del self.check_route_is_process[src_datapath_id][pkt_ipv4.dst][pkt_ipv4.tos]["process"]
-        self.check_route_is_process_SEM.release()
-        self.route_control_sem.release()
+         
+        GLOBAL_VALUE.route_control_sem.release()
+        print("耗時:",time.time()-_start_time)
+        print("設定完成\n\n\n")
+
     def check_route_setting(self,src_datapath_id,pkt_ipv4,priority):
         for path in GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"]:
             i=path[2]
             set_datapath_id = i[0]
-            if src_datapath_id==set_datapath_id:
-                 
+            if src_datapath_id==set_datapath_id:   
                 return True
         return False
+
     def clear_multi_route_path(self,dst, priority):
-        #刪除光光
+        """
+        刪除乾淨dst
+        """
         set_switch_for_barrier=set()
         if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:
             cookie=GLOBAL_VALUE.PATH[dst][priority]["cookie"]
@@ -195,24 +210,28 @@ class RouteModule(app_manager.RyuApp):
                     tmp_datapath = GLOBAL_VALUE.G.nodes[(set_datapath_id, None)]["datapath"]
                     ofp = tmp_datapath.ofproto
                     parser = tmp_datapath.ofproto_parser
-                    """
+                    
                     mod = parser.OFPGroupMod(tmp_datapath, command=ofp.OFPGC_DELETE,group_id=cookie)
                      
                     tmp_datapath.send_msg(mod)
-                    """
+                    
                     match = parser.OFPMatch()
                     mod = parser.OFPFlowMod(datapath=tmp_datapath, table_id=ofp.OFPTT_ALL,
                                             command=ofp.OFPFC_DELETE, out_port=ofp.OFPP_ANY, out_group=ofp.OFPG_ANY,
                                             match=match, cookie=cookie, cookie_mask=0xffffffffffffffff
                                             )
+                    
+                    
                     tmp_datapath.send_msg(mod)
+                    
                     set_switch_for_barrier.add(tmp_datapath)
+        print("clear_multi_route_path 等待刪除乾淨")
         for tmp_datapath in set_switch_for_barrier:
             self.wait_finish_switch_BARRIER_finish(tmp_datapath)
+        print("clear_multi_route_path 刪除乾淨")
         #del GLOBAL_VALUE.PATH[dst][priority]["path"]
 
     def send_barrier_request(self, datapath,xid=None):
-        
         ofp_parser = datapath.ofproto_parser
         req = ofp_parser.OFPBarrierRequest(datapath)
         req.xid=xid
@@ -220,17 +239,77 @@ class RouteModule(app_manager.RyuApp):
     #當交換機已經完成先前的設定才會回傳這個
     @set_ev_cls(ofp_event.EventOFPBarrierReply, MAIN_DISPATCHER)
     def barrier_reply_handler(self, ev):
-        #print(ev.msg.)
+        
         msg = ev.msg
+        print(msg)
         datapath = msg.datapath
-        GLOBAL_VALUE.barrier_lock[datapath.id]=False
+        
+        
+        print("wait_finish_switch_BARRIER_finish ok",datapath.id)
+
     def wait_finish_switch_BARRIER_finish(self,datapath):
-        GLOBAL_VALUE.barrier_lock[datapath.id]=True
-        self.send_barrier_request(datapath)
-        while GLOBAL_VALUE.barrier_lock[datapath.id]:
-            hub.sleep(0)
- 
-     
+        """需要BARRIER但是openvswitch有可能呼叫了但不回傳 導致拖慢設定過程"""
+        """print("wait_finish_switch_BARRIER_finish",datapath.id)
+        return"""
+        
+        print(GLOBAL_VALUE.barrier_lock[datapath.id].counter,"GLOBAL_VALUE.barrier_lock[datapath.id].counter")
+        while GLOBAL_VALUE.barrier_lock[datapath.id].counter==0:
+            print("barrier_lock",datapath.id)
+            self.send_barrier_request(datapath)
+            time.sleep(0.1)
+            
+        print("wait_finish_switch_BARRIER_finish ok",datapath.id)
+        
+        #print("wait_finish_switch_BARRIER_finish",datapath,"ok")
+    def active_route(self):
+        hub.sleep(10)
+        print("主動模塊啟動")
+        while True:
+            if GLOBAL_VALUE.NEED_ACTIVE_ROUTE==False:
+                hub.sleep(0.5)
+                continue
+            GLOBAL_VALUE.route_control_sem.acquire()
+            print("開始主動設定")
+            for dst, v in list(GLOBAL_VALUE.PATH.items()):
+                dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[dst]["datapath_id"]
+                dst_port = GLOBAL_VALUE.ip_get_datapathid_port[dst]["port"]
+                for priority,v in list(GLOBAL_VALUE.PATH[dst].items()):
+                    src_datapath_id_set=set()
+                    #確認有沒有路徑需要被主動模塊優化
+                    if len(GLOBAL_VALUE.PATH[dst][priority]["path"])!=0:
+                        for path in GLOBAL_VALUE.PATH[dst][priority]["path"]:
+                            src_datapath_id_set.add(path[0])
+                    else:
+                        #沒有要優化就跳過
+                        continue
+                    all_route_path_list=[]
+                    for src_datapath_id in src_datapath_id_set:
+                        # 拿出目的地port number
+                        route_path_list_go,path_length=path_select.k_shortest_path_loop_free_version(self,GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id[0],src_datapath_id[1],dst_datapath_id,dst_port,weight="weight")
+                        for idx,i in enumerate(route_path_list_go):
+                            all_route_path_list.append(route_path_list_go[idx])
+                    
+                    #weight_list_go = [1 for _ in range(len(all_route_path_list))]
+                    weight_list_go=path_length
+
+                    #TODO 這個需要改寫
+                    tos=(priority-1)*2
+
+                    print("------動態資訊-----------")
+                    print("動態",dst)
+                    print("tos",tos)
+                    print("src_datapath_id_set",src_datapath_id_set)
+                    print(all_route_path_list)
+                    
+                    self.Setting_Multi_Route_Path(all_route_path_list, weight_list_go, dst,tos=tos,idle_timeout=GLOBAL_VALUE.FLOW_ENTRY_IDLE_TIMEOUT)
+                    print("-----------------")
+            print("結束主動設定")
+            GLOBAL_VALUE.route_control_sem.release()
+            GLOBAL_VALUE.NEED_ACTIVE_ROUTE=False
+            #這個設定的時間要大於idle timeout
+             
+            #print("動態gogo")
+      
     
 def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_dst, ipv4_src):
         #利用vlan tag把每個simple path切開

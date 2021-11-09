@@ -138,4 +138,7 @@ mininet要設定datapath為user才能使用user space轉發,
 ```
 sudo mn --topo single,2 --switch ovs,protocols=OpenFlow13,datapath=user
 ```
- 
+
+## 執行時期錯誤
+
+ryu由python撰寫的而線程是單核心,當你的拓樸規模過大會導致ryu的綠線程[eventlet](https://github.com/eventlet/eventlet)優先權或是排擠影響個別模塊功能.需要注意

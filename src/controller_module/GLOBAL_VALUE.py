@@ -16,6 +16,21 @@ from ryu.lib import hub
 from ryu import cfg
 from nested_dict import *
 
+route_control_sem=hub.Semaphore(1)
+
+NEED_ACTIVE_ROUTE=False
+ 
+"""當從強化學習拿到策略才需要開始更新"""
+FLOW_ENTRY_IDLE_TIMEOUT=10#sec
+"""當flow entry多久沒有流量就就可刪除"""
+MAX_K_SELECT_PATH=1#k shortest path最多選擇幾條多路徑
+MAX_Loss_Percent=0.2
+MAX_Jitter_ms=200#ms 需要預設最大的jitter可能範圍
+MAX_DELAY_TO_LOSS_ms=1000#ms
+"""多長的延遲被當作遺失"""
+MAX_bandwidth_bytes_per_s=1000000#最大可用頻寬
+
+
 ARP_SEND_FROM_CONTROLLER = b'\xff\11'  # (bytes)
 OpELD_EtherType = 0x1105  
 """Openflow Extend Link Detect"""
@@ -58,12 +73,28 @@ p1 p1 p1
                             |["path"]=[[(2, 3), (2, None), (2, 2), (3, 3), (3, None), (3, 4)]]
                             |["weight"][1,2]
                             |["graph"]= nx.DiGraph()
-                            |["package"]["start"][封包]=time.time()
-                            |["package"]["end"][封包]=time.time()
-                            |["detect"]|["latency_ms"]:0~max
-                                        |["jitter_ms"]:0~max
-                                        |["bandwidth_bytes_per_s"]:0~max_bandwidth　重要!!這個代表封包傳送的頻寬
-                                        |["loss_percent"]:0~1%
+                    
+::
+                    
+"""
+
+reward_max_size=3
+ALL_REWARD=0
+REWARD=nested_dict()
+"""
+這個負責統計SRC->DST路線品質
+是給強化學習反饋學習用的
+來源與目的地在同的交換機就不統計
+
+::
+
+    GLOBAL_VALUE.REWARD[SRC][dst][priority]|
+                                            |["package"][封包]["start"]=time.time()
+                                                             |["end"]=time.time()
+                                            |["detect"]|["latency_ms"]:0~max
+                                                        |["jitter_ms"]:0~max
+                                                        |["bandwidth_bytes_per_s"]:0~max_bandwidth　重要!!這個代表封包傳送的頻寬
+                                                        |["loss_percent"]:0~1%
 ::
                     
 """
@@ -122,7 +153,7 @@ xid_sem=hub.Semaphore(1)
 sadd
 """ 
 sem = hub.Semaphore(1)
-""
+"""負責mutex get_cookie"""
 barrier_lock={}
 """dd
 利用DiGraph抽象全雙工,並且直接呼叫nx.shortest_path(self.G,(交換機1,None),(交換機2,None),weight="weight")導出路由細節
@@ -157,6 +188,12 @@ len(ofp_multipart_type)==20
 
 
 def get_cookie(dst,priority):
+    """
+    每個dst-ip下的其中一個priority有全域唯一cookie號碼
+    這裡的priority代表不同Qos的分化
+
+    .. image:: ../../../../../src/controller_module/aa.drawio.svg
+    """
     global cookie
     # Semaphore(1)
     # 表示一次只能有一個人進來拿cookie
@@ -202,6 +239,10 @@ def get_xid(datapath_id):
 +-+-+-+ +-+-+-+-+-+-+-+
 """
 def check_edge_is_link(ID1, ID2):
+    """
+    因為我們抽象交換機與port之間也有edge(目的是讓networkx自動生成包含port的路徑策略)
+    所以需要辨別edge是"真實鏈路"與"交換機與port"
+    """
     # if port connect to port ,it return True
     if ID1[1] == None or ID2[1] == None:
         return False
@@ -221,3 +262,6 @@ def check_node_is_port(ID):
     else:
         return False
 #!SECTION
+
+
+zmq_socket=None

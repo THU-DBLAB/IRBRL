@@ -1,0 +1,59 @@
+*** Adding controller
+Unable to contact the remote controller at 127.0.0.1:6653
+*** Add switches
+*** Add hosts
+*** Add links
+(1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 300ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 300ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 200ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 200ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) *** Starting network
+*** Configuring hosts
+h1 h2 
+*** Starting controllers
+*** Starting switches
+(1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 300ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 200ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 300ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 200ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) *** Post configure switches and hosts
+*** Starting CLI:
+ssss
+mininet> Traceback (most recent call last):
+  File "find_delay_mini_sample.py", line 87, in <module>
+    myNetwork()
+  File "find_delay_mini_sample.py", line 81, in myNetwork
+    CLI(net)
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/cli.py", line 70, in __init__
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/cli.py", line 114, in run
+  File "/usr/lib/python3.8/cmd.py", line 126, in cmdloop
+    line = input(self.prompt)
+OSError: [Errno 9] Bad file descriptor
+*** Adding controller
+Unable to contact the remote controller at 127.0.0.1:6653
+*** Add switches
+*** Add hosts
+*** Add links
+(1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) ssss
+Traceback (most recent call last):
+  File "find_delay_mini_sample.py", line 87, in <module>
+    myNetwork()
+  File "find_delay_mini_sample.py", line 38, in myNetwork
+    net.addLink(s1, s2,port1=10,port2=10,cls=TCLink, bw=1000,jitter="0ms",delay="300ms",loss=0,max_queue_size=None)
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/net.py", line 406, in addLink
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 568, in __init__
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 456, in __init__
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 501, in makeIntfPair
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/util.py", line 270, in makeIntfPair
+Exception: Error creating interface pair (s1-eth10,s2-eth10): RTNETLINK answers: File exists
+ 
+*** Adding controller
+Unable to contact the remote controller at 127.0.0.1:6653
+*** Add switches
+*** Add hosts
+*** Add links
+(1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) (1000.00Mbit 0ms delay 0ms jitter 0.00000% loss) ssss
+Traceback (most recent call last):
+  File "find_delay_mini_sample.py", line 87, in <module>
+    myNetwork()
+  File "find_delay_mini_sample.py", line 38, in myNetwork
+    net.addLink(s1, s2,port1=10,port2=10,cls=TCLink, bw=1000,jitter="0ms",delay="300ms",loss=0,max_queue_size=None)
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/net.py", line 406, in addLink
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 568, in __init__
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 456, in __init__
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/link.py", line 501, in makeIntfPair
+  File "/usr/local/lib/python3.8/dist-packages/mininet-2.3.0-py3.8.egg/mininet/util.py", line 270, in makeIntfPair
+Exception: Error creating interface pair (s1-eth10,s2-eth10): RTNETLINK answers: File exists
+ 

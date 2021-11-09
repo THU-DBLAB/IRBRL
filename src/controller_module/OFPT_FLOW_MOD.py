@@ -16,10 +16,11 @@ def send_ADD_FlowMod(mod):
     mod.flags = ofp.OFPFF_SEND_FLOW_REM
     # if self._check_no_overlap_on_server(datapath.id,table_id,priority,match):
     mod.xid = GLOBAL_VALUE.get_xid(datapath.id)
-
     GLOBAL_VALUE.G.nodes[(datapath.id, None)
                     ]["FLOW_TABLE"][table_id][priority][str(match)] = mod
     GLOBAL_VALUE.error_search_by_xid[datapath.id][mod.xid]=mod
     datapath.send_msg(mod)
     #    return True
-    return False
+    return True
+
+ 

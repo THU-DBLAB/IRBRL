@@ -1,6 +1,10 @@
 from ryu.ofproto import ofproto_v1_5
 from controller_module import GLOBAL_VALUE
 from ryu.lib.packet import ethernet, arp, icmp, ipv4
+from sklearn.preprocessing import minmax_scale
+#這裡探討如何設定select的hash
+#https://github.com/openvswitch/ovs/blob/master/Documentation/group-selection-method-property.txt
+
 def send_add_group_mod(datapath, port_list: list, weight_list: list,vlan_tag_list:list, group_id: int):
         """
         group_id是給flow entry指引要導到哪個group entry
@@ -42,11 +46,21 @@ def send_add_group_mod(datapath, port_list: list, weight_list: list,vlan_tag_lis
         #print(mod.xid,mod)
         GLOBAL_VALUE.G.nodes[(datapath.id, None)]["now_max_xid"] = GLOBAL_VALUE.G.nodes[(
             datapath.id, None)]["now_max_xid"]+1
+        
+        
         datapath.send_msg(mod)
+        
 
-def send_add_group_mod_v1(datapath,port_list:list,weight_list:list,group_id:int):
-     
-    assert all(isinstance(x, int) for x in weight_list),"send_add_group_mod_v1 weight_list必須都是整數"+str(weight_list)
+       
+
+def send_add_group_mod_v1(datapath,port_list:list,weight_list:list,group_id:int,dry_run=False):
+    #ofp_group_bucket_prop_weight 的weight為uint16_t所以0~65535
+    #沒必要設定權重0所以要把數值壓縮在1~65535
+    #注意型態weight_list [np.int64,np.int64...]
+    print("send_add_group_mod_v1")
+    weight_list=list(minmax_scale(weight_list,feature_range=(1,65535)).astype(int))
+  
+    
     """
     group_id是給flow entry指引要導到哪個group entry
     """
@@ -62,7 +76,9 @@ def send_add_group_mod_v1(datapath,port_list:list,weight_list:list,group_id:int)
         #注意ryu ofv1.5.1的group範例寫錯
         #下面這個寫法要靠自己挖ryu原始碼才寫出來,所以遇到問題盡量挖控制器ryu,openvswitch原始碼
         #ofp_bucket->properties->ofp_group_bucket_prop_weight-spec openflow1.5.1 p.115~p.116 
-        _weight=ofp_parser.OFPGroupBucketPropWeight(weight=weight,length=8,type_=ofp.OFPGBPT_WEIGHT)
+
+        _weight=ofp_parser.OFPGroupBucketPropWeight(weight=int(weight),length=8,type_=ofp.OFPGBPT_WEIGHT)
+         
         buckets.append(ofp_parser.OFPBucket(bucket_id=bucket_id,actions=actions,properties=[_weight]))
         bucket_id=bucket_id+1
     
@@ -74,10 +90,35 @@ def send_add_group_mod_v1(datapath,port_list:list,weight_list:list,group_id:int)
         command=ofp.OFPGC_ADD
     else:
         command=ofp.OFPGC_MODIFY
+    #openvswitch擴展協議可以控制group table 的hash的演算法
+    #https://github.com/openvswitch/ovs/blob/master/Documentation/group-selection-method-property.txt
+    #底下黑魔法寫法 ryu的OFPGroupBucketPropExperimenter結構不適合寫我硬繞過去所以醜醜
+    
+    #目前範例不啟用
+     
+    properties=[]
 
-    mod = ofp_parser.OFPGroupMod(datapath, command=command,type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
+    """hash_alog="nohash"
+    if hash_alog=="hash":
+        #"hash" ascii == 0x68617368 
+        hash_alog_magic=[0,0x68617368,0,0,0,0,0]
+        _select_method=ofp_parser.OFPGroupBucketPropExperimenter(type_=ofp.OFPGBPT_EXPERIMENTER,exp_type=1,experimenter=0x0000154d,data=hash_alog_magic)
+        properties=[_select_method]"""
+    mod = ofp_parser.OFPGroupMod(datapath, command=command,type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets,properties=properties)
+    if dry_run:
+        return mod
+    #xid為了讓控制器知道哪個動作是錯誤的
     mod.xid=GLOBAL_VALUE.get_xid(datapath.id)
+    print("send_add_group_mod_v1acquire")
+    
     datapath.send_msg(mod)
-    GLOBAL_VALUE.G.nodes[(datapath.id,None)]["GROUP_TABLE"][group_id]=mod
+    
+    print("send_add_group_mod_v1release")
 
+     
+
+    GLOBAL_VALUE.G.nodes[(datapath.id,None)]["GROUP_TABLE"][group_id]=mod
+    #當發生錯誤就可以搜尋哪個動錯出錯
     GLOBAL_VALUE.error_search_by_xid[datapath.id][mod.xid]=mod
+    return mod
+

@@ -15,7 +15,7 @@ from ryu import cfg
 import time
 from nested_dict import *
 import numpy as np
-
+import collections
 from controller_module.utils import log, dict_tool
 from controller_module import GLOBAL_VALUE
 from controller_module import OFPT_FLOW_MOD, OFPT_PACKET_OUT
@@ -25,18 +25,22 @@ CONF = cfg.CONF
 
 
 class MonitorModule(app_manager.RyuApp):
+    """
+    負責處理檢測網路
+    """
+
     OpELD_start_time = nested_dict()
     echo_latency = {}
     monitor_thread = None
     delta = 3  # sec,using in _monitor() ,to control update speed
     
-    monitor_sent_opedl_packets = 50
+    monitor_sent_opedl_packets = 3
     "一次發送多少個封包"
     monitor_each_opeld_extra_byte = 0  # self.MTU-16#max=
     "每個封包額外大小 最大數值為::py:attr:`~controller_module.GLOBAL_VALUE.MTU`-16(OPELD header size)"
-    monitor_wait_opeld_back = 2  # sec 超過此時間的封包都會被當作遺失
+    monitor_wait_opeld_back = GLOBAL_VALUE.MAX_DELAY_TO_LOSS_ms/1000# sec 超過此時間的封包都會被當作遺失
     "超過此時間的封包都會被monitor當作遺失"
-    monitor_wait_update_path = 10
+    monitor_wait_update_path = 20
     set_weight_call_back_function = None
     
 
@@ -74,8 +78,10 @@ class MonitorModule(app_manager.RyuApp):
         """
         node_id = (datapath.id, None)
         if not GLOBAL_VALUE.G.has_node(node_id):
+            
             GLOBAL_VALUE.G.add_node(node_id)
             GLOBAL_VALUE.G.nodes[node_id]["datapath"] = datapath
+            
             GLOBAL_VALUE.G.nodes[node_id]["port"] = nested_dict()
             GLOBAL_VALUE.G.nodes[node_id]["all_port_duration_s_temp"] = 0
             GLOBAL_VALUE.G.nodes[node_id]["all_port_duration_s"] = 0
@@ -85,6 +91,7 @@ class MonitorModule(app_manager.RyuApp):
             GLOBAL_VALUE.G.nodes[node_id]["now_max_xid"] = 0
             GLOBAL_VALUE.G.nodes[(datapath.id, None)
                                  ]["GROUP_TABLE"] = nested_dict()
+            GLOBAL_VALUE.barrier_lock[datapath.id]=hub.Semaphore(1)
 
     def init_port_node(self, datapath, port_no):
         """
@@ -105,10 +112,12 @@ class MonitorModule(app_manager.RyuApp):
         當交換機連線完成
         OFPT_FEATURES_REPLY
         """
+         
         # set_meter_table is in _port_desc_stats_reply_handler
         # FIXME EDGE SWITCH AND TRANSIT SWITCH flow table 1 NOT ADD YET
         msg = ev.msg
         datapath = msg.datapath
+ 
         self.send_port_desc_stats_request(datapath)
         self.init_node(datapath)
 
@@ -116,7 +125,7 @@ class MonitorModule(app_manager.RyuApp):
         self.set_flow_table_1(datapath)
         self.set_flow_table_2(datapath)
         # !SECTION
-
+        print("當交換機連線完成",msg)
 
     # ────────────────────────────────────────────────────────────────────────────────
     """ SECTION Asynchronous Messages
@@ -128,6 +137,7 @@ class MonitorModule(app_manager.RyuApp):
     #SECTION OFPT_FLOW_REMOVED
     @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def _flow_removed_handler(self, ev):
+        #GLOBAL_VALUE.route_control_sem.acquire()
         """
         處理flow entry刪除
         """
@@ -142,11 +152,15 @@ class MonitorModule(app_manager.RyuApp):
         except:
             pass
         ipv4_dst = msg.match.get("ipv4_dst")
-        GLOBAL_VALUE.sem.acquire()
+        #GLOBAL_VALUE.sem.acquire()
         if ipv4_dst != None:
             # GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]
             # print(type(msg.match),msg.match.get("ipv4_dst"))
-            # 當flow entry刪除 相應的group entry也要一起刪除
+            #設計方案1
+            #當flow entry刪除 相應的group entry也要一起刪除
+
+            #設計方案2
+            #當
             """
             mod = ofp_parser.OFPGroupMod(
                 datapath, command=ofp.OFPGC_DELETE,group_id=msg.cookie)
@@ -159,15 +173,25 @@ class MonitorModule(app_manager.RyuApp):
             """
             # self.reuse_cookie[msg.cookie]=True#回收cookie
             # 當路徑上其中一個交換機flow entry刪除 就當作此路徑已經遺失 需要重新建立
-            for path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].copy():
-                for i in path[2::3]:
-                    set_datapath_id = i[0]
-                    if datapath.id == set_datapath_id:
-                        # print("刪除",path)
-                        if path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]:
-                            GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].remove(
-                                path)
-        GLOBAL_VALUE.sem.release()
+            """
+            有可能發生
+            交換機刪除flow entry->控制器並且告知控制器
+            但是控制器已經設定路線,導致控制器以為被刪除
+            """
+            if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
+                try:
+
+                    for path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].copy():
+                        for i in path[2::3]:
+                            set_datapath_id = i[0]
+                            if datapath.id == set_datapath_id:
+                                
+                                if path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]:
+                                    #print("刪除",path,msg.priority)
+                                    GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].remove(path)
+                except:
+                    pass
+        #GLOBAL_VALUE.sem.release()
 
         if msg.reason == ofp.OFPRR_IDLE_TIMEOUT:
             reason = 'IDLE TIMEOUT'
@@ -186,15 +210,15 @@ class MonitorModule(app_manager.RyuApp):
                 pass
         else:
             reason = 'unknown'
-            """
-            print('OFPFlowRemoved received: '
-                            'table_id=%d reason=%s priority=%d '
-                            'idle_timeout=%d hard_timeout=%d cookie=%d '
-                            'match=%s stats=%s',
-                            msg.table_id, reason, msg.priority,
-                            msg.idle_timeout, msg.hard_timeout, msg.cookie,
-                            msg.match, msg.stats)
-            """
+             
+        """print('OFPFlowRemoved received: '
+                        'table_id=%d reason=%s priority=%d '
+                        'idle_timeout=%d hard_timeout=%d cookie=%d '
+                        'match=%s stats=%s',
+                        msg.table_id, reason, msg.priority,
+                        msg.idle_timeout, msg.hard_timeout, msg.cookie,
+                        msg.match, msg.stats)"""
+        #GLOBAL_VALUE.route_control_sem.release()
 
     # SECTION OFPT_PORT_STATUS
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
@@ -275,10 +299,14 @@ class MonitorModule(app_manager.RyuApp):
         "設定flow table 1 的flow entry"
         self.add_all_flow_to_table(datapath, 1, 2)
 
-    def table_1_change_update_package(self, datapath, in_port):
+    def table_1_change_update_package(self, datapath):
+        """如果交換機與HOST相連就需要上傳封包紀錄"""
+        #FIXME 交換機與HOST相連的封包與路過的封包都會上傳上去
+        #目前解法是控制器拿到封包要確認是路過封包或是起點終點封包,如果路過封包就丟棄
+        #希望直接在交換機就不上傳路過封包
         ofp = datapath.ofproto
         parser = datapath.ofproto_parser
-        match = parser.OFPMatch(in_port=in_port)
+        match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         # 封包從table 1 複製 到 控制器 與table2
         inst = [parser.OFPInstructionActions(
@@ -300,7 +328,7 @@ class MonitorModule(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=65535, table_id=0,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst, hard_timeout=0)
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst, hard_timeout=0,idle_timeout=0)
         OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def add_all_flow_to_table(self, datapath, from_table_id, to_table_id):
@@ -310,7 +338,7 @@ class MonitorModule(app_manager.RyuApp):
         match = parser.OFPMatch()
         inst = [parser.OFPInstructionGotoTable(to_table_id)]
         mod = parser.OFPFlowMod(datapath=datapath, table_id=from_table_id, priority=0,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst)
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0,idle_timeout=0)
         OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
     def unknow_route_ask_controller(self, datapath):
@@ -321,7 +349,7 @@ class MonitorModule(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, priority=0, table_id=2,
-                                command=ofp.OFPFC_ADD, match=match, instructions=inst, hard_timeout=0)
+                                command=ofp.OFPFC_ADD, match=match, instructions=inst,hard_timeout=0,idle_timeout=0)
         OFPT_FLOW_MOD.send_ADD_FlowMod(mod)
 
 
@@ -343,7 +371,10 @@ class MonitorModule(app_manager.RyuApp):
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
         req = ofp_parser.OFPPortStatsRequest(datapath, 0, ofp.OFPP_ANY)
+         
+        
         datapath.send_msg(req)
+        
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
@@ -409,7 +440,10 @@ class MonitorModule(app_manager.RyuApp):
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
         req = ofp_parser.OFPPortDescStatsRequest(datapath, 0, ofp.OFPP_ANY)
+         
+        
         datapath.send_msg(req)
+        
 
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def port_desc_stats_reply_handler(self, ev):
@@ -511,7 +545,10 @@ class MonitorModule(app_manager.RyuApp):
             opeld_packet = opeld_header+SEQ+bytearray(extra_byte)
             out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                       match=match, actions=actions, data=opeld_packet)
+           
+            
             datapath.send_msg(out)
+            
 
         for k in self.OpELD_start_time[datapath.id][out_port].keys():
             if k >= num_packets:
@@ -522,7 +559,7 @@ class MonitorModule(app_manager.RyuApp):
         """
         非同步接收來自交換機OFPT_PACKET_IN message
         """
-        print("aaa")
+        
         msg = ev.msg
         datapath = msg.datapath
         port = msg.match['in_port']
@@ -530,7 +567,7 @@ class MonitorModule(app_manager.RyuApp):
         pkt_ethernet = pkt.get_protocol(ethernet.ethernet)
         if pkt_ethernet:
             if pkt_ethernet.ethertype == GLOBAL_VALUE.OpELD_EtherType:
-                print("get",self.decode_eth_1105(pkt_ethernet.dst,pkt_ethernet.src))
+                
                 seq = int.from_bytes(msg.data[14:16], "big")
                 self.handle_opeld(datapath, port, pkt_ethernet, seq)
         else:
@@ -548,21 +585,138 @@ class MonitorModule(app_manager.RyuApp):
                 self._handle_package_analysis(ev)
 
     def _handle_package_analysis(self, ev):
+        #return
+        """
+        負責處理GLOBAL_VALUE.REWARD
+        """
         msg = ev.msg
         datapath = msg.datapath
         pkt = packet.Packet(data=msg.data)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
+ 
         src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
+        dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
+        if src_datapath_id==dst_datapath_id:
+            "來源與目的地在同的交換機就不統計"
+            return
+        if datapath.id!=src_datapath_id and datapath.id!=dst_datapath_id:
+            "封包如果不是來自,來源與目的地交換機就不統計"
+            print("aaa")
+            return
         path_loc = "start" if datapath.id == src_datapath_id else "end"
         # FIXME 這msg.data可以改murmurhas去改變
 
-        dscp = int(pkt_ipv4.tos) >> 2
-        GLOBAL_VALUE.PATH[pkt_ipv4.dst][dscp]["package"][path_loc][msg.data] = time.time(
-        )
-        for src, v in list(GLOBAL_VALUE.PATH.items()):
-            for dst, dst_priority_path in list(v.items()):
-                pass
-                # print(dst_priority_path["detect"])
+        tos = int(pkt_ipv4.tos) 
+        pkt.protocols[1].ttl=0
+        pkt.serialize()
+        msg.data=pkt.data
+         
+        #print("-------------\n\n\n")
+         
+        if len(GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["detect"])==0:
+            #初始化空間
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["detect"]["latency_ms"]=collections.deque([], GLOBAL_VALUE.reward_max_size)
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["detect"]["bandwidth_bytes_per_s"]=collections.deque([], GLOBAL_VALUE.reward_max_size)
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["detect"]["loss_percent"]=collections.deque([], GLOBAL_VALUE.reward_max_size)
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["detect"]["jitter_ms"]=collections.deque([], GLOBAL_VALUE.reward_max_size)
+            
+        #此封包從起點交換機開始所以需要初始化
+        if path_loc=="start":
+             
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["package"][msg.data.hex()]["start"] = time.time() 
+             
+        #此封包到達終點交換機需要統計
+        if path_loc=="end":
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["package"][msg.data.hex()]["end"]=time.time()
+    def reward_cal(self):     
+        #統計封包流動數據
+        need_del_package=[]
+        for src, v in list(GLOBAL_VALUE.REWARD.items()):
+            for dst, v2 in list(v.items()):
+                for tos, v3 in list(v2.items()):
+                    loss_count=0
+                    all_package_count=0
+                    for msg_data,v4 in list(GLOBAL_VALUE.REWARD[src][dst][tos]["package"].items()):
+                        #print(v4)
+                        if v4["start"]=={}:
+                            del GLOBAL_VALUE.REWARD[src][dst][tos]["package"][msg_data]
+                            continue
+                        if v4["end"]!={}:
+                            delay_s=(v4["end"]-v4["start"])
+                            delay_ms=delay_s*1000
+                            _bytes=len(msg_data)/2
+                            bw=_bytes/delay_s
+                            #print(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"])
+                            GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"].append(delay_ms)
+                            GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["bandwidth_bytes_per_s"].append(bw)
+                            #封包已經結束所以不需要追蹤統計
+                            need_del_package.append(msg_data)
+                            #計算總共包
+                            all_package_count=all_package_count+1
+                        else:
+                            if (time.time()-v4["start"])>GLOBAL_VALUE.MAX_DELAY_TO_LOSS_ms/1000 and(v4["end"]=={} or "end" not in v4):
+                                #如果封包從起始開始已經流動超過三秒 並且終點還沒有紀錄 就判定封包遺失
+                                loss_count=loss_count+1
+                                #已經判定封包遺失所以不需要在統計
+                                need_del_package.append(msg_data)
+                                #計算總共包
+                                all_package_count=all_package_count+1
+
+                    #print(loss_count,all_package_count)
+                    if all_package_count!=0:
+                        loss_percent=loss_count/all_package_count
+                    else:
+                        loss_percent=0
+
+                    GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"].append(loss_percent)
+                    jitter = abs(np.std(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]))
+                    GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"].append(jitter)
+
+        #負責處理封包在伺服器上面過長時間要刪除          
+        for src, v in list(GLOBAL_VALUE.REWARD.items()):
+            for dst, v2 in list(v.items()):
+                for tos, v3 in list(v2.items()):
+                    for msg_data in need_del_package:
+                        if msg_data in GLOBAL_VALUE.REWARD[src][dst][tos]["package"]:
+                            if time.time()-GLOBAL_VALUE.REWARD[src][dst][tos]["package"][msg_data]["start"]>10:
+                                #封包超過10秒刪除
+                                del GLOBAL_VALUE.REWARD[src][dst][tos]["package"][msg_data]
+        #負責計算reward
+        temp_all_reward=[]
+        for src, v in list(GLOBAL_VALUE.REWARD.items()):
+            for dst, v2 in list(v.items()):
+                for tos, v3 in list(v2.items()):
+                    latency_P=int(f"{tos:0{8}b}"[0:2],2)
+                    loss_P=int(f"{tos:0{8}b}"[2:4],2)
+                    jitter_P=int(f"{tos:0{8}b}"[4:6],2)
+                    #jitter_P=int(f"{tos:0{8}b}"[6:8],2)
+                    #print("--------ok---------",tos,latency_P,loss_P,jitter_P)
+
+                    #如果空的別做運算
+                    if GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]==[]:
+                        continue
+                    latency_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]),(0,20),(100,-100))
+                    latency_R=latency_P*latency_C
+                    #FIXME 這裡可能有問題
+                    #bandwidth_R=bandwidth_P*np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["bandwidth_bytes_per_s"]),(0,10000),comp_size)
+                    loss_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]),(0,GLOBAL_VALUE.MAX_Loss_Percent),(1,-1))
+                    loss_R=loss_P*loss_C
+
+                    jitter_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]),(0,GLOBAL_VALUE.MAX_Jitter_ms),(1,-1))
+                    jitter_R=jitter_P*jitter_C
+
+                    temp_all_reward.append(np.nan_to_num(latency_R)+np.nan_to_num(loss_R)+np.nan_to_num(jitter_R))
+                    
+                    #print("--------ok_end---------")
+        if temp_all_reward!=[]:
+            ok_reward=np.mean(temp_all_reward)
+            if np.isnan(ok_reward):
+                ok_reward=0
+            GLOBAL_VALUE.ALL_REWARD=ok_reward                    
+        
+
+    def check_all_topology_finish(self):
+        pass
 
     def handle_opeld(self, datapath, port, pkt_opeld, seq):
         # NOTE Topology maintain
@@ -571,6 +725,8 @@ class MonitorModule(app_manager.RyuApp):
             GLOBAL_VALUE.G.add_edge(start_node_id, end_node_id)
             GLOBAL_VALUE.G[start_node_id][end_node_id]["tmp"] = nested_dict()
             GLOBAL_VALUE.G[start_node_id][end_node_id]["detect"] = nested_dict()
+            GLOBAL_VALUE.G[start_node_id][end_node_id]["weight"]=0
+            GLOBAL_VALUE.G[start_node_id][end_node_id]["aiweight"]=22
 
         start_switch, start_port = self.decode_opeld(
             pkt_opeld.dst, pkt_opeld.src)
@@ -613,7 +769,7 @@ class MonitorModule(app_manager.RyuApp):
     def handle_arp(self, datapath, pkt_arp, in_port, packet):
         def update_fome_arp_data(datapath, pkt_arp, in_port):
             # FIXME
-            self.table_1_change_update_package(datapath, in_port)
+            self.table_1_change_update_package(datapath)
             GLOBAL_VALUE.G.nodes[(
                 datapath.id, None)]["port"][in_port]["host"][pkt_arp.src_ip] = pkt_arp.src_mac
             self.ARP_Table[pkt_arp.src_ip] = pkt_arp.src_mac
@@ -647,7 +803,11 @@ class MonitorModule(app_manager.RyuApp):
         ofp_parser = datapath.ofproto_parser
         echo_req = ofp_parser.OFPEchoRequest(datapath,
                                              data=b"%.12f" % time.time())
+        
         datapath.send_msg(echo_req)
+        
+
+        
 
     @set_ev_cls(ofp_event.EventOFPEchoReply, [HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER])
     def echo_reply_handler(self, ev):
@@ -724,6 +884,7 @@ class MonitorModule(app_manager.RyuApp):
         # @decorator_node_iteration
 
         def _update_link():
+            print("_update_link")
             def clear_link_tmp_data():
                 for edge in list(GLOBAL_VALUE.G.edges()):
                     edge_id1 = edge[0]
@@ -745,7 +906,9 @@ class MonitorModule(app_manager.RyuApp):
                                 hub.spawn(self.send_opeld_packet,
                                           switch_data["datapath"], port_no, extra_byte=self.monitor_each_opeld_extra_byte, num_packets=self.monitor_sent_opedl_packets)
             while True:
-
+                hub.sleep(1)
+                #計算reward
+                self.reward_cal()
                 # 統計鏈路
                 # NOTE start
                 # print(GLOBAL_VALUE.G.nodes[datapath.id]["port"][1]["OFPMP_PORT_DESC"]["properties"],datapath.id)
@@ -814,8 +977,8 @@ class MonitorModule(app_manager.RyuApp):
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["latency_ms"] = delay_one_packet
 
                             # 這裡你可以自創演算法去評估權重
-                            GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"] = formula.OSPF(
-                                bw*8)
+                            GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"] = delay_one_packet#formula.OSPF(bw*8)
+                            #print(GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"],"weight")
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["hop"] = 1
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["low_delay"] = delay_one_packet
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["low_jitter"] = jitter
@@ -841,6 +1004,7 @@ class MonitorModule(app_manager.RyuApp):
     def error_msg_handler(self, ev):
         "負責處理所有錯誤訊息"
         msg = ev.msg
+        print(msg)
         datapath = msg.datapath
         ofproto = msg.datapath.ofproto
         if msg.type == ofproto.OFPET_FLOW_MOD_FAILED:
@@ -868,5 +1032,5 @@ class MonitorModule(app_manager.RyuApp):
         print("__________________________")
         print("\n")
         
-        self.stop()
+        #self.stop()
         #print(msg.data.decode("utf-8"))

@@ -32,7 +32,7 @@ import copy
 import sys
 from multiprocessing import Process
 import zmq
-
+import os
 from controller_module import RL
 from controller_module import dynamic_tc
 from controller_module import OFPT_FLOW_MOD
@@ -40,8 +40,13 @@ from controller_module import GLOBAL_VALUE
 from controller_module.monitor_module import MonitorModule
 from controller_module.route_module.route_module import RouteModule
 from controller_module.route_module import path_select
- 
-
+import gym, ray
+from ray.rllib.agents import ppo
+import json
+import socket
+import time
+import json
+import threading
 #---------------------------------------------------
 """
                         客製化權重計算演算法
@@ -84,10 +89,9 @@ class RinformanceRoute(app_manager.RyuApp):
     'cc': MonitorModule,"ccc":RouteModule
     }
     "設定控制器openflow的版本"
-    al_module = Process(target=RL.entry, args=())
+     
     "強化學習模塊"
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
+     
     "確認交換機是否收到OFPT_BARRIER_REPLY :py:mod:`~RR.RinformanceRoute` "
     def __init__(self, *args, **kwargs):
         # SECTION __init__
@@ -96,18 +100,17 @@ class RinformanceRoute(app_manager.RyuApp):
         #self._start_dynamic_tc_module_thread = hub.spawn(self.start_dynamic_tc_module)
 
         #  Socket to talk to server
-        self.al_module.start()
-        print("Connecting to hello world server…")
-        self.socket.connect("tcp://localhost:5555")
-        for request in range(10):
-            print("Sending request %s …" % request)
-            self.socket.send(b"Hello")
-            #  Get the reply.
-            message = self.socket.recv()
-            print("Received reply %s [ %s ]" % (request, message))
-        print("請等拓樸探索完畢")
+        
+        
+        print("_rl_zmq_connecter_thread")
+        self._rl_zmq_connecter_thread=threading.Thread(target=self.rl_zmq_connecter, args=())
+        self._rl_zmq_connecter_thread.start()
 
-         
+        print("al_module")
+
+        self.al_module = Process(target=RL.entry, args=())
+        self.al_module.start()
+        print("al_module ok")
         # run app_manager.RyuApp oject's __init__()
         super(RinformanceRoute, self).__init__(*args, **kwargs)
          
@@ -119,8 +122,28 @@ class RinformanceRoute(app_manager.RyuApp):
 
         # NOTE Start Green Thread
         self._handle_route_thread = []
+        #self._thread_RL_entry = hub.spawn(self.RL_entry)
+         
+
  
-   
+    def RL_entry(self):
+        hub.sleep(20)
+        count_edge=self.check_all_edge()
+        #  Send reply back to client
+        _,observation_space=self.one_row_observation()
+        init_RL={"observation_call_back":"","action_space":count_edge,"observation_space":observation_space}
+        ray.init()
+        trainer = ppo.PPOTrainer(env=RL.RL_CORE, config={"gamma":0,"lr": 0.1,
+            "env_config": init_RL,  # config to pass to env class
+        })
+        while True:
+            print('啟動AI模組')
+             
+            trainer.train()
+            hub.sleep(5)
+            #trainer.save()
+            #  Wait for next request from client
+         
 # ────────────────────────────────────────────────────────────────────────────────
     """SECTION Green Thread
     +-+-+-+-+-+ +-+-+-+-+-+-+
@@ -128,7 +151,172 @@ class RinformanceRoute(app_manager.RyuApp):
     +-+-+-+-+-+ +-+-+-+-+-+-+
     """
 # ────────────────────────────────────────────────────────────────────────────────
-    
+    def check_all_edge(self)->int:
+        #取出所有交換機的port
+
+        #這裡必須等待所有交換機都連線控制器
+        #FIXME 等待有更好的寫法
+         
+        while True:
+            port_check=nested_dict(2,str)
+
+            #確認port是否連接為host
+            for node_id in GLOBAL_VALUE.G.copy().nodes:
+                if GLOBAL_VALUE.check_node_is_switch(node_id):
+                    for k in GLOBAL_VALUE.G.nodes[node_id]["port"]:
+                        port_check[node_id[0]][k]=None
+                        
+                        if len(GLOBAL_VALUE.G.nodes[node_id]["port"][k]["host"])!=0:
+                            pass        
+                            port_check[node_id[0]][k]="host"      
+            #確認port是否連接為edge
+            count_edge=0
+            for edge in list(GLOBAL_VALUE.G.edges()):
+                edge_id1 = edge[0]
+                edge_id2 = edge[1]
+                
+                if GLOBAL_VALUE.check_edge_is_link(edge_id1, edge_id2):
+                    port_check[edge_id1[0]][edge_id1[1]]="edge"
+                    port_check[edge_id2[0]][edge_id2[1]]="edge"
+            print(port_check,"check_all_edge")
+            #確認是否每個port連接對象完成
+            check_ok=True
+            count_edge=0
+            for datapath_id in port_check:
+                for port in port_check[datapath_id]:
+                    if port_check[datapath_id][port]==None:
+                        check_ok=False
+                    elif port_check[datapath_id][port]=="edge":
+                        count_edge=count_edge+1
+            print(port_check,"check_all_edge2")
+             
+            if check_ok and count_edge!=0:
+                return count_edge
+            time.sleep(1)
+            
+    #各種observation版本
+    #什麼結構給強化學習
+    def one_row_observation(self):
+        
+         
+        while True:
+            jitter_ms=[]
+            loss_percent=[]
+            bandwidth_bytes_per_s=[]
+            latency_ms=[]
+            for edge in list(GLOBAL_VALUE.G.edges()):
+                edge_id1 = edge[0]
+                edge_id2 = edge[1]
+                if GLOBAL_VALUE.check_edge_is_link(edge_id1, edge_id2):
+                    #放入拓樸
+                    
+                    jitter_ms.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["jitter_ms"])
+                    loss_percent.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["loss_percent"])
+                    bandwidth_bytes_per_s.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["bandwidth_bytes_per_s"])
+                    latency_ms.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["latency_ms"])
+            ans=None
+            try:
+                jitter_ms=np.interp(jitter_ms,(0,GLOBAL_VALUE.MAX_Jitter_ms),(0,1))
+                loss_percent=np.interp(loss_percent,(0,GLOBAL_VALUE.MAX_Loss_Percent),(0,1))
+                bandwidth_bytes_per_s=np.interp(bandwidth_bytes_per_s,(0,GLOBAL_VALUE.MAX_bandwidth_bytes_per_s),(0,1))
+                latency_ms=np.interp(latency_ms,(0,GLOBAL_VALUE.MAX_DELAY_TO_LOSS_ms),(0,1))
+                ans=np.concatenate((jitter_ms,loss_percent,bandwidth_bytes_per_s,latency_ms))
+                 
+            except:
+                print("one_row_observation error")
+             
+            if len(ans.tolist())!=0:
+                return ans.tolist(),len(ans.tolist())
+            time.sleep(0.5)
+            
+
+    def clear_temp_file(self):
+        try:
+            os.remove("controller_module/.for_robot")  
+            os.remove("controller_module/.for_rl")
+        except:
+            pass
+        
+    def rl_zmq_connecter(self):
+        """
+        這裡負責傳送必要資訊給強化學習並且拿回策略
+        """
+        self.clear_temp_file()
+        print("請至少等待所有交換機都連線完成")
+        time.sleep(10)
+
+        #FIXME 這裡要處理等待拓樸探索完成,必須等待拓樸建構完成才知道強化學習輸出的結構,缺點無法應用在拓樸頻繁更動的環境
+        count_edge=self.check_all_edge()
+         
+        
+        #  Send reply back to client
+        _,observation_space=self.one_row_observation()
+        init_RL={"action_space":count_edge,"observation_space":observation_space}
+        print(init_RL)
+        init_RL_str=json.dumps(init_RL)
+        action_uuid=0
+        self.write_for_rl(str(init_RL_str))
+        
+        while True:
+            #  Wait for next request from client
+             
+            message = self.read_for_robot()
+            
+            #  Do some 'work'
+             
+            try:
+                message_list=json.loads(message)
+                if int(message_list["action_uuid"])<=action_uuid:
+                    #為了確保action是新的
+                    continue
+                action_uuid=int(message_list["action_uuid"])
+                message_list=message_list["action"]
+            except:
+                hub.sleep(1)
+                continue
+            print("ACTIONs",message_list)
+            e_index=0
+            #把ai回傳的權重放入拓樸
+            for edge in list(GLOBAL_VALUE.G.edges()):
+                edge_id1 = edge[0]
+                edge_id2 = edge[1]
+                if GLOBAL_VALUE.check_edge_is_link(edge_id1, edge_id2):
+                    #放入拓樸
+                    GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"]=message_list[e_index]
+                    e_index=e_index+1
+            GLOBAL_VALUE.NEED_ACTIVE_ROUTE=True
+
+            #這裡設定-10為了當沒有封包流動reward應該0但是一直頻繁設定網路我給負號獎勵
+            GLOBAL_VALUE.ALL_REWARD=-10
+            time.sleep(10)
+             
+            #  Send reply back to client
+            obs,_=self.one_row_observation()
+            step_data={"action_uuid":action_uuid,"obs":list(obs),"reward":GLOBAL_VALUE.ALL_REWARD}
+            
+            #FIXME 回傳
+            print("step_data",step_data)
+            self.write_for_rl(str(json.dumps(step_data)))
+            #socket.send(str(json.dumps(step_data)).encode("utf8"))
+    def read_for_robot(self):
+        pass 
+        while True:  
+            try:
+                f = open("controller_module/.for_robot", "r")
+                a=f.read()
+                
+                f.close()
+                break
+            except:
+                pass
+            time.sleep(0.5)
+        return a
+    def write_for_rl(self,w):
+        f = open("controller_module/.for_rl", "w")
+        f.write(w)
+        f.close()
+        pass
+
     def start_dynamic_tc_module(self):
         print("start_dynamic_tc_module等待拓樸完成")
         hub.sleep(20)
@@ -251,39 +439,7 @@ class RinformanceRoute(app_manager.RyuApp):
     # NOTE Run tui
     def _run_tui(self):
         tui.Screen(self.TUI_Mapping)
-    def active_route(self):
-        hub.sleep(10)
-        print("主動模塊啟動")
-        while True:
-            self.route_control_sem.acquire()
-            for dst, v in list(GLOBAL_VALUE.PATH.items()):
-                dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[dst]["datapath_id"]
-                dst_port = GLOBAL_VALUE.ip_get_datapathid_port[dst]["port"]
-                for priority,v in list(GLOBAL_VALUE.PATH[dst].items()):
-                    src_datapath_id_set=set()
-                    if len(GLOBAL_VALUE.PATH[dst][priority]["path"])!=0:
-                        for path in GLOBAL_VALUE.PATH[dst][priority]["path"]:
-                            src_datapath_id_set.add(path[0])
-                    else:
-                        continue
-                    all_route_path_list=[]
-                    for src_datapath_id in src_datapath_id_set:
-                        # 拿出目的地port number
-                        route_path_list_go,_=route_module.k_shortest_path_loop_free_version(self,4,src_datapath_id[0],src_datapath_id[1],dst_datapath_id,dst_port)
-                        for idx,i in enumerate(route_path_list_go):
-                            all_route_path_list.append(route_path_list_go[idx])
-                    weight_list_go = [1 for _ in range(len(all_route_path_list))]
-                    tos=priority-1
-                    print("------動態資訊-----------")
-                    print("動態",dst)
-                    print("src_datapath_id_set",src_datapath_id_set)
-                    print(all_route_path_list)
-                    print("-----------------")
-                    self.setting_multi_route_path(all_route_path_list, weight_list_go, dst,tos=tos,idle_timeout=10)
-            self.route_control_sem.release()
-            #這個設定的時間要大於idle timeout
-            hub.sleep(20)
-            print("動態gogo")
+   
      
 
 # !SECTION

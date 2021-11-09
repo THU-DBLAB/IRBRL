@@ -33,7 +33,12 @@ def myNetwork():
     #https://github.com/mininet/mininet/blob/de28f67a97fc8915cc1586c984465d89a016d8eb/mininet/link.py#L314
     net.addLink(s1, h1,cls=TCLink, bw=1000,jitter="0ms",delay="0ms",loss=0,max_queue_size=55)
     net.addLink(h2, s2,cls=TCLink, bw=1000,jitter="0ms",delay="0ms",loss=0,max_queue_size=55)
-    net.addLink(s1, s2,cls=TCLink, bw=1000,jitter="0ms",delay="0ms",loss=0,max_queue_size=33)
+
+
+    net.addLink(s1, s2,port1=10,port2=10,cls=TCLink, bw=1000,jitter="0ms",delay="300ms",loss=0,max_queue_size=None)
+    net.addLink(s1, s2,port1=11,port2=11,cls=TCLink, bw=1000,jitter="0ms",delay="200ms",loss=0,max_queue_size=None)
+    net.addLink(s1, s2,port1=12,port2=12,cls=TCLink, bw=1000,jitter="0ms",delay="0ms",loss=0,max_queue_size=None)
+    net.addLink(s1, s2,port1=14,port2=14,cls=TCLink, bw=1000,jitter="0ms",delay="0ms",loss=0,max_queue_size=None)
     #mininet 的delay,jitter,loss底層是依靠netem(Network Emulation)模擬
     #由於mininet底層呼叫netem時沒有設定jitter的分佈狀態,所以netem依照默認設定是normal(常態分佈)
     #https://git.kernel.org/pub/scm/network/iproute2/iproute2.git/tree/man/man8/tc-netem.8#n89

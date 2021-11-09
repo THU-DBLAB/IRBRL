@@ -1,4 +1,3 @@
-
 from ryu.lib.packet import ether_types,ethernet, arp, icmp, ipv4,lldp
 from ryu.ofproto import ofproto_v1_5
 from ryu.lib.packet import packet
@@ -38,6 +37,7 @@ def send_arp_packet(datapath, out_port, eth_src_mac, eth_dst_mac, arp_opcode, ar
                                 match=match, actions=actions, data=data)
     datapath.send_msg(out)
 def Packout_to_FlowTable(tmp_datapath,data):
+    print("Packout_to_FlowTable")
     ofp = tmp_datapath.ofproto
     parser = tmp_datapath.ofproto_parser
     match = tmp_datapath.ofproto_parser.OFPMatch(
@@ -45,8 +45,11 @@ def Packout_to_FlowTable(tmp_datapath,data):
     actions = [parser.OFPActionOutput(port=ofp.OFPP_TABLE)]
     out = parser.OFPPacketOut(datapath=tmp_datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                 match=match, data=data,actions=actions)
+   
+    
     tmp_datapath.send_msg(out)
-
+    
+    print("Packout_to_FlowTable ok")
 
 
 def send_icmp_packet( datapath, src="255.255.255", dst="255.255.255"):
@@ -65,7 +68,10 @@ def send_icmp_packet( datapath, src="255.255.255", dst="255.255.255"):
     actions = [parser.OFPActionOutput(ofp.OFPP_ALL)]
     out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER,
                                 match=match, actions=actions, data=data)
+   
+    
     datapath.send_msg(out)
+    
 # NOTE send_lldp_packet
 
 def send_lldp_packet(datapath, port_no, data_size):
@@ -92,4 +98,8 @@ def send_lldp_packet(datapath, port_no, data_size):
         in_port=datapath.ofproto.OFPP_CONTROLLER)
     out = parser.OFPPacketOut(
         datapath=datapath, buffer_id=ofp.OFP_NO_BUFFER, match=match, actions=actions, data=data)
+    
     datapath.send_msg(out)
+    
+
+   

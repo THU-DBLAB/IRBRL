@@ -20,8 +20,6 @@ class Loop_Free_Check():
         try:
             nx.find_cycle(self.tmp_check_G, orientation="original")
             self.tmp_check_G=self.check_G
-            print("!!!有還")
-            exit(1)
             return False
         except:
             self.check_G=self.tmp_check_G
@@ -34,29 +32,46 @@ FIXME 需要補 演算法複雜度
 """
 #--------------------------------
 def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=None,weight="weight"):
-    #這個保證路徑沒有loop
+    """
+    這個利用先深搜尋確保路徑沒有loop
+    """
     loop_free_path=[]
     path_length=[]
+    #初始化拓樸當check_G==None就新增一個空的有向拓樸
     loop_check=Loop_Free_Check(check_G)
+  
+    shortest_simple_paths=nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
+   
+    #從最好的路線開始挑選
     try:
-        shortest_simple_paths=nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
+        for path in shortest_simple_paths:
+            #當挑出來的路到達k條就可以離開
+            if len(loop_free_path)==k:
+                break
+            #依序藉由節點塞入拓樸
+            prev_node=None
+            for node in path:  
+                if prev_node!=None:
+                    if weight in GLOBAL_VALUE.G[prev_node][node]:
+                        loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
+                    else:
+                        loop_check.add_edge(prev_node, node, weight=0)
+                prev_node=node 
+
+            #確認是否沒有發生loop
+            _check_free=loop_check.check_free_loop()
+            if _check_free:
+                #沒有發生loop所以我們可以蒐集起來
+                loop_free_path.append(path)
+                path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
+                #所有k條loop free路線,這些路線的權重
     except:
-        return
-    for path in shortest_simple_paths:
-        if len(loop_free_path)==k:
-            break
-        prev_node=None
-        for node in path:  
-            if prev_node!=None:
-                 
-                loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
-            prev_node=node 
-        _check_free=loop_check.check_free_loop()
-        if _check_free:
-            loop_free_path.append(path)
-            path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
-    
+        loop_free_path=None
+        path_length=0
+
+
     return loop_free_path,path_length
+
 
  
 
@@ -95,7 +110,7 @@ def k_shortest_path_first_and_maximum_flow_version(self,k,src_datapath_id,src_po
         prev_node=None
         for node in path:  
             if prev_node!=None:
-                print(prev_node,node,weight)
+                #print(prev_node,node,weight)
                 loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
             prev_node=node 
         _check_free=loop_check.check_free_loop()
@@ -108,8 +123,10 @@ def k_shortest_path_first_and_maximum_flow_version(self,k,src_datapath_id,src_po
 
 
 def k_maximum_flow_loop_free_version(self,k,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=None,weight="weight",capacity="capacity"):
-    #這個保證路徑沒有loop
-    #當我們想要考量 最大剩餘頻寬 於鏈路cost如何合併? 
+    """
+    這個保證路徑沒有loop
+    當我們想要考量 最大剩餘頻寬 於鏈路cost如何合併? 
+    """
     loop_free_path=[]
     path_length=[]
     tmp_G=GLOBAL_VALUE.G.copy()
