@@ -45,6 +45,10 @@ def setting_multi_route_path(self, route_path_list, weight_list, dst, prev_path=
                 end
                 控制器->>交換機: ofp_flow_mod(設定起點的flow entry,如果有岔路就需要設定group id)
         """
+        #確保不為空
+        if route_path_list==[]:
+            return
+
         all_mod=[]
         #route_path_list 必須保證free loop
         priority,dscp=prioritylib.tos_base(tos)

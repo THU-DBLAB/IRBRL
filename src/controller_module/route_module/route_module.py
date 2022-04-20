@@ -106,7 +106,7 @@ class RouteModule(app_manager.RyuApp):
      
     def handle_route(self, datapath, port, msg):
         _start_time=time.time()
-        # 下面這行再做,當不知道ip在哪個port與交換機,就需要利用arp prop序詢問
+       
         print("------handle_route------")
          
         print("\n\n")
@@ -124,7 +124,7 @@ class RouteModule(app_manager.RyuApp):
         priority,dscp=prioritylib.tos_base(pkt_ipv4.tos)
         #alog=self.get_alog_name_by_tos(dscp)
          
-        #確保知道此ip的位置
+        #確保知道此ip的位置,下面這行再做,當不知道ip在哪個port與交換機,就需要利用arp prop序詢問
         self._check_know_ip_place(pkt_ipv4.src)
         self._check_know_ip_place(pkt_ipv4.dst)
 
@@ -160,7 +160,7 @@ class RouteModule(app_manager.RyuApp):
         print("拿出原先到達",pkt_ipv4.dst,"所有路徑")
         prev_G=Get_NOW_GRAPH(self,pkt_ipv4.dst,priority)
         print("拿到原先所有路徑加上後來新增的路徑並且確保不會發生LOOP")
-        route_path_list_go,_=self.path_selecter(GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G)
+        route_path_list_go,_=self.path_selecter(GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G,weight="weight")
         print("確認是否有找到路徑",route_path_list_go)
         #發生找不道路徑
         if route_path_list_go==None:
@@ -239,34 +239,35 @@ class RouteModule(app_manager.RyuApp):
     #當交換機已經完成先前的設定才會回傳這個
     @set_ev_cls(ofp_event.EventOFPBarrierReply, MAIN_DISPATCHER)
     def barrier_reply_handler(self, ev):
-        
         msg = ev.msg
         print(msg)
         datapath = msg.datapath
-        
-        
         print("wait_finish_switch_BARRIER_finish ok",datapath.id)
-
     def wait_finish_switch_BARRIER_finish(self,datapath):
         """需要BARRIER但是openvswitch有可能呼叫了但不回傳 導致拖慢設定過程"""
         """print("wait_finish_switch_BARRIER_finish",datapath.id)
         return"""
-        
         print(GLOBAL_VALUE.barrier_lock[datapath.id].counter,"GLOBAL_VALUE.barrier_lock[datapath.id].counter")
         while GLOBAL_VALUE.barrier_lock[datapath.id].counter==0:
             print("barrier_lock",datapath.id)
             self.send_barrier_request(datapath)
             time.sleep(0.1)
-            
         print("wait_finish_switch_BARRIER_finish ok",datapath.id)
-        
         #print("wait_finish_switch_BARRIER_finish",datapath,"ok")
     def active_route(self):
+        if GLOBAL_VALUE.active_route_run==False:
+            print("主動模塊不啟動")
+            return
+
         hub.sleep(10)
         print("主動模塊啟動")
+        
+        #print(nx.adjacency_matrix(GLOBAL_VALUE.G))
+
         while True:
             if GLOBAL_VALUE.NEED_ACTIVE_ROUTE==False:
                 hub.sleep(0.5)
+                #print("nono setting")
                 continue
             GLOBAL_VALUE.route_control_sem.acquire()
             print("開始主動設定")
@@ -282,18 +283,23 @@ class RouteModule(app_manager.RyuApp):
                     else:
                         #沒有要優化就跳過
                         continue
+
                     all_route_path_list=[]
+
+                    #TODO 這個需要改寫
+                    tos=(priority-1)*2
+                    
                     for src_datapath_id in src_datapath_id_set:
                         # 拿出目的地port number
-                        route_path_list_go,path_length=path_select.k_shortest_path_loop_free_version(self,GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id[0],src_datapath_id[1],dst_datapath_id,dst_port,weight="weight")
+                        route_path_list_go,path_length=path_select.k_shortest_path_loop_free_version(self,GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id[0],src_datapath_id[1],dst_datapath_id,dst_port,weight="ppinin")
                         for idx,i in enumerate(route_path_list_go):
                             all_route_path_list.append(route_path_list_go[idx])
                     
                     #weight_list_go = [1 for _ in range(len(all_route_path_list))]
                     weight_list_go=path_length
 
-                    #TODO 這個需要改寫
-                    tos=(priority-1)*2
+                    
+                     
 
                     print("------動態資訊-----------")
                     print("動態",dst)
@@ -406,7 +412,7 @@ def setting_multi_route_path_base_vlan(self, route_path_list, weight_list, ipv4_
         #GLOBAL_VALUE.PATH[ipv4_src][ipv4_dst]["proitity"][priority] = _cookie
 
  
-
+#test
 def Get_NOW_GRAPH(self,dst,priority):
     check_G = nx.DiGraph()
     if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:

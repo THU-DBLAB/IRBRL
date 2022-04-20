@@ -16,17 +16,29 @@ from ryu.lib import hub
 from ryu import cfg
 from nested_dict import *
 
+
+
+"""當你要自創權重名稱 需要在這裡註冊以便初始化"""
+weight_name_regist=["weight","ppinin"]
 route_control_sem=hub.Semaphore(1)
 
-NEED_ACTIVE_ROUTE=False
- 
+active_route_run=False#是否需要主動模塊
+
+active_rl_in_active_route=True#是否需要啟動強化學習
+rl_accept_tos=[192,111]#設定哪些tos需要強化學習優化 如果全部需要強化學習優化會導致啟動緩慢 因為action過大
+
 """當從強化學習拿到策略才需要開始更新"""
-FLOW_ENTRY_IDLE_TIMEOUT=10#sec
+FLOW_ENTRY_IDLE_TIMEOUT=0#sec 0代表沒有TIMEOUT
+
 """當flow entry多久沒有流量就就可刪除"""
-MAX_K_SELECT_PATH=1#k shortest path最多選擇幾條多路徑
+MAX_K_SELECT_PATH=4#k shortest path最多選擇幾條多路徑
+"""計算reward需要先告訴公式範圍多少"""
 MAX_Loss_Percent=0.2
 MAX_Jitter_ms=200#ms 需要預設最大的jitter可能範圍
+MAX_DELAY_ms=50#ms需要預設最大的jitter可能範圍
+
 MAX_DELAY_TO_LOSS_ms=1000#ms
+ 
 """多長的延遲被當作遺失"""
 MAX_bandwidth_bytes_per_s=1000000#最大可用頻寬
 
@@ -265,3 +277,10 @@ def check_node_is_port(ID):
 
 
 zmq_socket=None
+
+ 
+
+
+"""這裡不能改單純給兩個線程溝通是否可以開始更新網路"""
+NEED_ACTIVE_ROUTE=False#主動模塊需要等待 強化學習跟新權重後才更新路由
+ 

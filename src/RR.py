@@ -3,6 +3,7 @@
 # Authour: Lu-Yi-Hsun
 # Using visual code
 # https://marketplace.visualstudio.com/items?itemName=ExodiusStudios.comment-anchors
+from pickle import GLOBAL
 import time
 import logging
 from controller_module import route_module
@@ -47,6 +48,7 @@ import socket
 import time
 import json
 import threading
+from filelock import FileLock
 #---------------------------------------------------
 """
                         客製化權重計算演算法
@@ -101,17 +103,18 @@ class RinformanceRoute(app_manager.RyuApp):
 
         #  Socket to talk to server
         
-        
-        print("_rl_zmq_connecter_thread")
-        self._rl_zmq_connecter_thread=threading.Thread(target=self.rl_zmq_connecter, args=())
-        self._rl_zmq_connecter_thread.start()
+        if GLOBAL_VALUE.active_rl_in_active_route and GLOBAL_VALUE.active_route_run:
+            #print("_rl_zmq_connecter_thread")
+            self._rl_zmq_connecter_thread=threading.Thread(target=self.rl_zmq_connecter, args=())
+            self._rl_zmq_connecter_thread.start()
 
-        print("al_module")
+            print("啟動橋化學習")
 
-        self.al_module = Process(target=RL.entry, args=())
-        self.al_module.start()
-        print("al_module ok")
+            self.al_module = Process(target=RL.entry, args=())
+            self.al_module.start()
+            
         # run app_manager.RyuApp oject's __init__()
+
         super(RinformanceRoute, self).__init__(*args, **kwargs)
          
       
@@ -197,8 +200,7 @@ class RinformanceRoute(app_manager.RyuApp):
     #各種observation版本
     #什麼結構給強化學習
     def one_row_observation(self):
-        
-         
+        #NEED_Norm=True#需要正規劃?
         while True:
             jitter_ms=[]
             loss_percent=[]
@@ -214,26 +216,33 @@ class RinformanceRoute(app_manager.RyuApp):
                     loss_percent.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["loss_percent"])
                     bandwidth_bytes_per_s.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["bandwidth_bytes_per_s"])
                     latency_ms.append(GLOBAL_VALUE.G[edge_id1][edge_id2]["detect"]["latency_ms"])
-            ans=None
+            ans=np.array([])
+            ans_no_norm=np.array([])
+
             try:
+                ans_no_norm=np.concatenate((jitter_ms,loss_percent,bandwidth_bytes_per_s,latency_ms)) 
+                
                 jitter_ms=np.interp(jitter_ms,(0,GLOBAL_VALUE.MAX_Jitter_ms),(0,1))
                 loss_percent=np.interp(loss_percent,(0,GLOBAL_VALUE.MAX_Loss_Percent),(0,1))
                 bandwidth_bytes_per_s=np.interp(bandwidth_bytes_per_s,(0,GLOBAL_VALUE.MAX_bandwidth_bytes_per_s),(0,1))
                 latency_ms=np.interp(latency_ms,(0,GLOBAL_VALUE.MAX_DELAY_TO_LOSS_ms),(0,1))
-                ans=np.concatenate((jitter_ms,loss_percent,bandwidth_bytes_per_s,latency_ms))
-                 
+                
+                ans=np.concatenate((jitter_ms,loss_percent,bandwidth_bytes_per_s,latency_ms)) 
             except:
                 print("one_row_observation error")
              
             if len(ans.tolist())!=0:
-                return ans.tolist(),len(ans.tolist())
+                return ans.tolist(),len(ans.tolist()),ans_no_norm.tolist()
             time.sleep(0.5)
-            
+    def adjacency_observation(self):
+        pass  
 
     def clear_temp_file(self):
         try:
             os.remove("controller_module/.for_robot")  
             os.remove("controller_module/.for_rl")
+            os.remove("controller_module/.for_robot.lock")  
+            os.remove("controller_module/.for_rl.lock")
         except:
             pass
         
@@ -250,7 +259,7 @@ class RinformanceRoute(app_manager.RyuApp):
          
         
         #  Send reply back to client
-        _,observation_space=self.one_row_observation()
+        _,observation_space,_=self.one_row_observation()
         init_RL={"action_space":count_edge,"observation_space":observation_space}
         print(init_RL)
         init_RL_str=json.dumps(init_RL)
@@ -266,10 +275,12 @@ class RinformanceRoute(app_manager.RyuApp):
              
             try:
                 message_list=json.loads(message)
-                if int(message_list["action_uuid"])<=action_uuid:
+                message_action_uuid=int(message_list["action_uuid"])
+                #print(message_action_uuid,action_uuid)
+                if message_action_uuid<action_uuid:
                     #為了確保action是新的
                     continue
-                action_uuid=int(message_list["action_uuid"])
+                action_uuid=message_action_uuid
                 message_list=message_list["action"]
             except:
                 hub.sleep(1)
@@ -282,17 +293,24 @@ class RinformanceRoute(app_manager.RyuApp):
                 edge_id2 = edge[1]
                 if GLOBAL_VALUE.check_edge_is_link(edge_id1, edge_id2):
                     #放入拓樸
-                    GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"]=message_list[e_index]
+                    #每個
+                    #print(edge_id1,edge_id2)
+                    GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"]=message_list[e_index]
                     e_index=e_index+1
+                    print("權重\n\n") 
+                    print(edge_id1,edge_id2,GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"])
+                    print("權重\n\n")  
+
             GLOBAL_VALUE.NEED_ACTIVE_ROUTE=True
 
             #這裡設定-10為了當沒有封包流動reward應該0但是一直頻繁設定網路我給負號獎勵
-            GLOBAL_VALUE.ALL_REWARD=-10
+             
             time.sleep(10)
              
             #  Send reply back to client
-            obs,_=self.one_row_observation()
-            step_data={"action_uuid":action_uuid,"obs":list(obs),"reward":GLOBAL_VALUE.ALL_REWARD}
+            GLOBAL_VALUE.ALL_REWARD=GLOBAL_VALUE.ALL_REWARD-10
+            obs,_,obs_no_norm=self.one_row_observation()
+            step_data={"action_uuid":action_uuid,"obs":list(obs),"obs_no_norm":list(obs_no_norm),"reward":GLOBAL_VALUE.ALL_REWARD}
             
             #FIXME 回傳
             print("step_data",step_data)
@@ -302,20 +320,24 @@ class RinformanceRoute(app_manager.RyuApp):
         pass 
         while True:  
             try:
-                f = open("controller_module/.for_robot", "r")
-                a=f.read()
-                
-                f.close()
+                lock = FileLock("controller_module/.for_robot" + ".lock")
+                with lock:
+                    f = open("controller_module/.for_robot", "r")
+                    a=f.read()
+                    
+                    f.close()
                 break
             except:
                 pass
             time.sleep(0.5)
         return a
     def write_for_rl(self,w):
-        f = open("controller_module/.for_rl", "w")
-        f.write(w)
-        f.close()
-        pass
+        lock = FileLock("controller_module/.for_rl" + ".lock")
+        with lock:
+            f = open("controller_module/.for_rl", "w")
+            f.write(w)
+            f.close()
+            pass
 
     def start_dynamic_tc_module(self):
         print("start_dynamic_tc_module等待拓樸完成")

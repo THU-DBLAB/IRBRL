@@ -43,31 +43,31 @@ def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapa
     shortest_simple_paths=nx.shortest_simple_paths(GLOBAL_VALUE.G, (src_datapath_id, src_port), (dst_datapath_id, dst_port), weight=weight)
    
     #從最好的路線開始挑選
-    try:
-        for path in shortest_simple_paths:
-            #當挑出來的路到達k條就可以離開
-            if len(loop_free_path)==k:
-                break
-            #依序藉由節點塞入拓樸
-            prev_node=None
-            for node in path:  
-                if prev_node!=None:
-                    if weight in GLOBAL_VALUE.G[prev_node][node]:
-                        loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
-                    else:
-                        loop_check.add_edge(prev_node, node, weight=0)
-                prev_node=node 
+  
+    for path in shortest_simple_paths:
+        #當挑出來的路到達k條就可以離開
+        if len(loop_free_path)==k:
+            break
+        #依序藉由節點塞入拓樸
+        prev_node=None
+        for node in path:  
+            if prev_node!=None:
+                print(prev_node,node,GLOBAL_VALUE.G[prev_node][node].keys())
+                if weight in GLOBAL_VALUE.G[prev_node][node]:
+                    loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
+                else:
+                    loop_check.add_edge(prev_node, node, weight=0)
+            prev_node=node 
 
-            #確認是否沒有發生loop
-            _check_free=loop_check.check_free_loop()
-            if _check_free:
-                #沒有發生loop所以我們可以蒐集起來
-                loop_free_path.append(path)
-                path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
-                #所有k條loop free路線,這些路線的權重
-    except:
-        loop_free_path=None
-        path_length=0
+        #確認是否沒有發生loop
+        _check_free=loop_check.check_free_loop()
+        if _check_free:
+            #沒有發生loop所以我們可以蒐集起來
+            loop_free_path.append(path)
+            print(path)
+            path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
+            #所有k條loop free路線,這些路線的權重
+    
 
 
     return loop_free_path,path_length

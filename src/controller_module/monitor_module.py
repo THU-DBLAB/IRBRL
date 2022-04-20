@@ -103,8 +103,14 @@ class MonitorModule(app_manager.RyuApp):
             GLOBAL_VALUE.G.add_node(port_id)
         if not GLOBAL_VALUE.G.has_edge(switch_id, port_id):
             GLOBAL_VALUE.G.add_edge(switch_id, port_id, weight=0)
+            for n in GLOBAL_VALUE.weight_name_regist:
+                GLOBAL_VALUE.G[switch_id][port_id][n]=0
+
         if not GLOBAL_VALUE.G.has_edge(port_id, switch_id):
             GLOBAL_VALUE.G.add_edge(port_id, switch_id, weight=0)
+            for n in GLOBAL_VALUE.weight_name_regist:
+                GLOBAL_VALUE.G[port_id][switch_id][n]=0
+
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -592,6 +598,7 @@ class MonitorModule(app_manager.RyuApp):
         msg = ev.msg
         datapath = msg.datapath
         pkt = packet.Packet(data=msg.data)
+        #print(msg.data)
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
  
         src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
@@ -622,9 +629,7 @@ class MonitorModule(app_manager.RyuApp):
             
         #此封包從起點交換機開始所以需要初始化
         if path_loc=="start":
-             
-            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["package"][msg.data.hex()]["start"] = time.time() 
-             
+            GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["package"][msg.data.hex()]["start"] = time.time()  
         #此封包到達終點交換機需要統計
         if path_loc=="end":
             GLOBAL_VALUE.REWARD[pkt_ipv4.src][pkt_ipv4.dst][tos]["package"][msg.data.hex()]["end"]=time.time()
@@ -695,20 +700,27 @@ class MonitorModule(app_manager.RyuApp):
                     #如果空的別做運算
                     if GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]==[]:
                         continue
-                    latency_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]),(0,20),(100,-100))
+
+                    _loss_percent=GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]
+                    _latency_ms=GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]
+                    _jitter_ms=GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]
+
+
+                    latency_C=np.interp(np.mean(_latency_ms),(0,GLOBAL_VALUE.MAX_DELAY_ms),(1,-1))
                     latency_R=latency_P*latency_C
                     #FIXME 這裡可能有問題
                     #bandwidth_R=bandwidth_P*np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["bandwidth_bytes_per_s"]),(0,10000),comp_size)
-                    loss_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]),(0,GLOBAL_VALUE.MAX_Loss_Percent),(1,-1))
+                    loss_C=np.interp(np.mean(_loss_percent),(0,GLOBAL_VALUE.MAX_Loss_Percent),(1,-1))
                     loss_R=loss_P*loss_C
-
-                    jitter_C=np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]),(0,GLOBAL_VALUE.MAX_Jitter_ms),(1,-1))
+                    jitter_C=np.interp(np.mean(_jitter_ms),(0,GLOBAL_VALUE.MAX_Jitter_ms),(1,-1))
                     jitter_R=jitter_P*jitter_C
 
+                    #print(tos,jitter_R,loss_R,latency_R)
                     temp_all_reward.append(np.nan_to_num(latency_R)+np.nan_to_num(loss_R)+np.nan_to_num(jitter_R))
                     
                     #print("--------ok_end---------")
         if temp_all_reward!=[]:
+            #print(temp_all_reward,"temp_all_reward")
             ok_reward=np.mean(temp_all_reward)
             if np.isnan(ok_reward):
                 ok_reward=0
@@ -721,11 +733,19 @@ class MonitorModule(app_manager.RyuApp):
     def handle_opeld(self, datapath, port, pkt_opeld, seq):
         # NOTE Topology maintain
         def init_edge(start_node_id, end_node_id):
+            """如果要新增權重需要先在這裡初始化"""
             print("拓樸", start_node_id, end_node_id)
             GLOBAL_VALUE.G.add_edge(start_node_id, end_node_id)
             GLOBAL_VALUE.G[start_node_id][end_node_id]["tmp"] = nested_dict()
             GLOBAL_VALUE.G[start_node_id][end_node_id]["detect"] = nested_dict()
             GLOBAL_VALUE.G[start_node_id][end_node_id]["weight"]=0
+            
+            for n in GLOBAL_VALUE.weight_name_regist:
+                GLOBAL_VALUE.G[start_node_id][end_node_id][n]=0
+
+            GLOBAL_VALUE.G[start_node_id][end_node_id]["ppinin"]=0
+             
+
             GLOBAL_VALUE.G[start_node_id][end_node_id]["aiweight"]=22
 
         start_switch, start_port = self.decode_opeld(
@@ -978,6 +998,11 @@ class MonitorModule(app_manager.RyuApp):
 
                             # 這裡你可以自創演算法去評估權重
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"] = delay_one_packet#formula.OSPF(bw*8)
+                            #GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"] = delay_one_packet
+                             
+
+                            #GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"]=0
+
                             #print(GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"],"weight")
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["hop"] = 1
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["low_delay"] = delay_one_packet
