@@ -3,7 +3,7 @@ from itertools import count
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-sns.set_theme(style="whitegrid")
+sns.set_theme(style="darkgrid")
 c=200
 def get_ping(file):
     global c

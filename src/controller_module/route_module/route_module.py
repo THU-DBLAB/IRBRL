@@ -71,10 +71,11 @@ class RouteModule(app_manager.RyuApp):
             OFPT_PACKET_OUT.arp_request_all(ip)
             # FIXME 這裡要注意迴圈引發問題 可能需要異步處理,arp只發一次
             # 這裡等待問完的結果
-            #print("check")
+            print("check")
             while GLOBAL_VALUE.ip_get_datapathid_port[ip]["datapath_id"] == {} or GLOBAL_VALUE.ip_get_datapathid_port[ip]["port"]=={}:
                 hub.sleep(0)
                 # time.sleep(0.01)#如果沒有sleep會導致 整個系統停擺,可以有其他寫法？
+            print("check ok")
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         """
@@ -90,6 +91,7 @@ class RouteModule(app_manager.RyuApp):
         if pkt_ipv4:
             # table 2負責路由
             if msg.table_id == 2:
+                print("拿到路由需求")
                 # 想要路由但不知道路,我們需要幫它,這屬於被動路由
                 hub.spawn(self.handle_route, datapath=datapath, port=port, msg=msg)  
     def get_alog_name_by_tos(self,dscp):
@@ -151,7 +153,6 @@ class RouteModule(app_manager.RyuApp):
             tmp_datapath = GLOBAL_VALUE.G.nodes[(src_datapath_id, None)]["datapath"]
             Packout_to_FlowTable(tmp_datapath,data)
             print("路線早已設定完成封包直接轉送回交換機")
-             
             GLOBAL_VALUE.route_control_sem.release()#離開要補釋放資源
             return
         print("路線還沒設定,準備開始設定")
@@ -161,7 +162,7 @@ class RouteModule(app_manager.RyuApp):
         prev_G=Get_NOW_GRAPH(self,pkt_ipv4.dst,priority)
         print("拿到原先所有路徑加上後來新增的路徑並且確保不會發生LOOP")
         route_path_list_go,_=self.path_selecter(GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id,src_port,dst_datapath_id,dst_port,check_G=prev_G,weight="weight")
-        print("確認是否有找到路徑",route_path_list_go)
+        #print("確認是否有找到路徑",route_path_list_go)
         #發生找不道路徑
         if route_path_list_go==None:
             #找不到路徑 直接讓封包遺失
@@ -190,7 +191,8 @@ class RouteModule(app_manager.RyuApp):
         for path in GLOBAL_VALUE.PATH[pkt_ipv4.dst][priority]["path"]:
             i=path[2]
             set_datapath_id = i[0]
-            if src_datapath_id==set_datapath_id:   
+            if src_datapath_id==set_datapath_id:  
+                print(path,src_datapath_id,pkt_ipv4) 
                 return True
         return False
 
@@ -198,6 +200,9 @@ class RouteModule(app_manager.RyuApp):
         """
         刪除乾淨dst
         """
+        #假定已經刪除乾淨
+        del GLOBAL_VALUE.PATH[dst][priority]["path"]
+
         set_switch_for_barrier=set()
         if GLOBAL_VALUE.PATH[dst][priority]["path"]!={}:
             cookie=GLOBAL_VALUE.PATH[dst][priority]["cookie"]
@@ -229,7 +234,8 @@ class RouteModule(app_manager.RyuApp):
         for tmp_datapath in set_switch_for_barrier:
             self.wait_finish_switch_BARRIER_finish(tmp_datapath)
         print("clear_multi_route_path 刪除乾淨")
-        #del GLOBAL_VALUE.PATH[dst][priority]["path"]
+        
+         
 
     def send_barrier_request(self, datapath,xid=None):
         ofp_parser = datapath.ofproto_parser
@@ -242,18 +248,65 @@ class RouteModule(app_manager.RyuApp):
         msg = ev.msg
         print(msg)
         datapath = msg.datapath
-        print("wait_finish_switch_BARRIER_finish ok",datapath.id)
+        print("barrier_reply_handler ok",datapath.id)
+        GLOBAL_VALUE.barrier_lock[datapath.id].release()
+
     def wait_finish_switch_BARRIER_finish(self,datapath):
         """需要BARRIER但是openvswitch有可能呼叫了但不回傳 導致拖慢設定過程"""
         """print("wait_finish_switch_BARRIER_finish",datapath.id)
         return"""
         print(GLOBAL_VALUE.barrier_lock[datapath.id].counter,"GLOBAL_VALUE.barrier_lock[datapath.id].counter")
+        GLOBAL_VALUE.barrier_lock[datapath.id].acquire()
+        print(GLOBAL_VALUE.barrier_lock[datapath.id].counter)
         while GLOBAL_VALUE.barrier_lock[datapath.id].counter==0:
             print("barrier_lock",datapath.id)
             self.send_barrier_request(datapath)
-            time.sleep(0.1)
+            print("send send_barrier_request")
+            print(GLOBAL_VALUE.barrier_lock[datapath.id].counter)
+            time.sleep(0)
         print("wait_finish_switch_BARRIER_finish ok",datapath.id)
         #print("wait_finish_switch_BARRIER_finish",datapath,"ok")
+
+
+    def greddy_dynamic(self):
+        #貪婪主動動態策略
+        while True:  
+            GLOBAL_VALUE.route_control_sem.acquire()
+            for dst, v in list(GLOBAL_VALUE.PATH.items()):
+                dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[dst]["datapath_id"]
+                dst_port = GLOBAL_VALUE.ip_get_datapathid_port[dst]["port"]
+                for priority,v in list(GLOBAL_VALUE.PATH[dst].items()):
+                    src_datapath_id_set=set()
+                    #確認有沒有路徑需要被主動模塊優化
+                    if len(GLOBAL_VALUE.PATH[dst][priority]["path"])!=0:
+                        for path in GLOBAL_VALUE.PATH[dst][priority]["path"]:
+                            src_datapath_id_set.add(path[0])
+                    else:
+                        #沒有要優化就跳過
+                        continue
+                    all_route_path_list=[]
+                    #TODO 這個需要改寫
+                    tos=(priority-1)*2
+                    for src_datapath_id in src_datapath_id_set:
+                        # 拿出目的地port number
+                        route_path_list_go,path_length=path_select.k_shortest_path_loop_free_version(self,GLOBAL_VALUE.MAX_K_SELECT_PATH,src_datapath_id[0],src_datapath_id[1],dst_datapath_id,dst_port,weight=str(tos))
+                        for idx,i in enumerate(route_path_list_go):
+                            all_route_path_list.append(route_path_list_go[idx])  
+                    #weight_list_go = [1 for _ in range(len(all_route_path_list))]
+                    weight_list_go=path_length
+                    print("------動態資訊-----------")
+                    print("動態",dst)
+                    print("tos",tos)
+                    print("src_datapath_id_set",src_datapath_id_set)
+                    print(all_route_path_list)
+                    self.Setting_Multi_Route_Path(all_route_path_list, weight_list_go, dst,tos=tos,idle_timeout=GLOBAL_VALUE.FLOW_ENTRY_IDLE_TIMEOUT)
+                    print("-----------------")
+            print("結束主動設定")
+            GLOBAL_VALUE.route_control_sem.release()
+            hub.sleep(0)
+            #time.sleep(0.5)
+           
+
     def active_route(self):
         if GLOBAL_VALUE.active_route_run==False:
             print("主動模塊不啟動")
@@ -261,7 +314,9 @@ class RouteModule(app_manager.RyuApp):
 
         hub.sleep(10)
         print("主動模塊啟動")
-        
+        if GLOBAL_VALUE.active_greddy_in_active_route:
+            print("貪婪主動模塊啟動")
+            self.greddy_dynamic()
         #print(nx.adjacency_matrix(GLOBAL_VALUE.G))
 
         while True:
@@ -312,6 +367,8 @@ class RouteModule(app_manager.RyuApp):
             print("結束主動設定")
             GLOBAL_VALUE.route_control_sem.release()
             GLOBAL_VALUE.NEED_ACTIVE_ROUTE=False
+
+            "FIXME 這裡需要加寫當主動設定不好需要退回原本策略"
             #這個設定的時間要大於idle timeout
              
             #print("動態gogo")

@@ -34,7 +34,7 @@ class MonitorModule(app_manager.RyuApp):
     monitor_thread = None
     delta = 3  # sec,using in _monitor() ,to control update speed
     
-    monitor_sent_opedl_packets = 3
+    monitor_sent_opedl_packets = 10
     "一次發送多少個封包"
     monitor_each_opeld_extra_byte = 0  # self.MTU-16#max=
     "每個封包額外大小 最大數值為::py:attr:`~controller_module.GLOBAL_VALUE.MTU`-16(OPELD header size)"
@@ -193,7 +193,7 @@ class MonitorModule(app_manager.RyuApp):
                             if datapath.id == set_datapath_id:
                                 
                                 if path in GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"]:
-                                    #print("刪除",path,msg.priority)
+                                    print("刪除",path,msg.priority)
                                     GLOBAL_VALUE.PATH[ipv4_dst][msg.priority]["path"].remove(path)
                 except:
                     pass
@@ -592,15 +592,16 @@ class MonitorModule(app_manager.RyuApp):
 
     def _handle_package_analysis(self, ev):
         #return
+        import entropy as ent
         """
         負責處理GLOBAL_VALUE.REWARD
         """
         msg = ev.msg
         datapath = msg.datapath
         pkt = packet.Packet(data=msg.data)
-        #print(msg.data)
+        #print(msg.data.hex(),type(msg.data))
+        #print(ent.perm_entropy(list(msg.data), normalize=True))
         pkt_ipv4 = pkt.get_protocol(ipv4.ipv4)
- 
         src_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.src]["datapath_id"]
         dst_datapath_id = GLOBAL_VALUE.ip_get_datapathid_port[pkt_ipv4.dst]["datapath_id"]
         if src_datapath_id==dst_datapath_id:
@@ -674,9 +675,15 @@ class MonitorModule(app_manager.RyuApp):
                         loss_percent=0
 
                     GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"].append(loss_percent)
-                    jitter = abs(np.std(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]))
-                    GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"].append(jitter)
+                    try:
+                        if len(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"])!=0:
+                            jitter = abs(np.std(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]))
+                            GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"].append(jitter)
+                    except:
+                        print("error_____reward_cal")
+                        print(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"])
 
+                        pass
         #負責處理封包在伺服器上面過長時間要刪除          
         for src, v in list(GLOBAL_VALUE.REWARD.items()):
             for dst, v2 in list(v.items()):
@@ -698,7 +705,7 @@ class MonitorModule(app_manager.RyuApp):
                     #print("--------ok---------",tos,latency_P,loss_P,jitter_P)
 
                     #如果空的別做運算
-                    if GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]==[] or GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]==[]:
+                    if len(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["latency_ms"])==0 or len(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"])==0 or len(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"])==0:
                         continue
 
                     _loss_percent=GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["loss_percent"]
@@ -706,7 +713,7 @@ class MonitorModule(app_manager.RyuApp):
                     _jitter_ms=GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["jitter_ms"]
 
 
-                    latency_C=np.interp(np.mean(_latency_ms),(0,GLOBAL_VALUE.MAX_DELAY_ms),(1,-1))
+                    latency_C=np.interp(np.mean(_latency_ms),(0,GLOBAL_VALUE.MAX_DELAY_ms),(100,-100))
                     latency_R=latency_P*latency_C
                     #FIXME 這裡可能有問題
                     #bandwidth_R=bandwidth_P*np.interp(np.mean(GLOBAL_VALUE.REWARD[src][dst][tos]["detect"]["bandwidth_bytes_per_s"]),(0,10000),comp_size)
@@ -724,6 +731,7 @@ class MonitorModule(app_manager.RyuApp):
             ok_reward=np.mean(temp_all_reward)
             if np.isnan(ok_reward):
                 ok_reward=0
+                print("REWARD GET NAN")
             GLOBAL_VALUE.ALL_REWARD=ok_reward                    
         
 
@@ -904,7 +912,7 @@ class MonitorModule(app_manager.RyuApp):
         # @decorator_node_iteration
 
         def _update_link():
-            print("_update_link")
+            #print("_update_link")
             def clear_link_tmp_data():
                 for edge in list(GLOBAL_VALUE.G.edges()):
                     edge_id1 = edge[0]
@@ -926,7 +934,7 @@ class MonitorModule(app_manager.RyuApp):
                                 hub.spawn(self.send_opeld_packet,
                                           switch_data["datapath"], port_no, extra_byte=self.monitor_each_opeld_extra_byte, num_packets=self.monitor_sent_opedl_packets)
             while True:
-                hub.sleep(1)
+                hub.sleep(0)
                 #計算reward
                 self.reward_cal()
                 # 統計鏈路
@@ -999,6 +1007,32 @@ class MonitorModule(app_manager.RyuApp):
                             # 這裡你可以自創演算法去評估權重
                             GLOBAL_VALUE.G[edge_id1][edge_id2]["weight"] = delay_one_packet#formula.OSPF(bw*8)
                             #GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"] = delay_one_packet
+                             
+                            for tos in GLOBAL_VALUE.weight_name_regist[2:]:
+                                tos=int(tos)
+                                latency_P=int(f"{tos:0{8}b}"[0:2],2)
+                                loss_P=int(f"{tos:0{8}b}"[2:4],2)
+                                bandwith_P=int(f"{tos:0{8}b}"[2:4],2)#頻寬比較特殊 直接使用遺失來評斷是否有符合頻寬需求,如果網路開始遺失代表沒有符合
+                                jitter_P=int(f"{tos:0{8}b}"[4:6],2)
+
+                                level=100
+                                latency_C=np.interp(delay_one_packet,(0,GLOBAL_VALUE.MAX_DELAY_ms),(0,level))
+                                latency_R=latency_P*latency_C
+                              
+                                
+                                loss_C=np.interp(loss,(0,GLOBAL_VALUE.MAX_Loss_Percent),(0,level))
+                                loss_R=loss_P*loss_C
+
+                                jitter_C=np.interp(jitter,(0,GLOBAL_VALUE.MAX_Jitter_ms),(0,level))
+                                jitter_R=jitter_P*jitter_C
+
+                                bandwith_C=np.interp(bw,(0,GLOBAL_VALUE.MAX_bandwidth_bytes_per_s),(level,0))
+                                bandwith_R=bandwith_P*bandwith_C
+
+                                GLOBAL_VALUE.G[edge_id1][edge_id2][str(tos)]=latency_R+loss_R+jitter_R+bandwith_R
+                                if tos==192:
+                                    print(edge_id1,edge_id2,latency_R,loss_R,jitter_R,bandwith_R)
+
                              
 
                             #GLOBAL_VALUE.G[edge_id1][edge_id2]["ppinin"]=0

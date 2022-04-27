@@ -48,7 +48,7 @@ class RL_CORE():
         sys.stdout.flush()
 
         self.greddy_on=True#是否啟動貪婪策略
-        self.greedy_percent=5000#每多少次貪婪策略才與真實環境互動10%
+        self.greedy_percent=100#每多少次貪婪策略才與真實環境互動10%
         self.step_count=0#計算做出幾次策略決定
         self.action_uuid=0#唯一標示 負責
         self.env_config=env_config
@@ -58,8 +58,7 @@ class RL_CORE():
         self._action_space_and_qos=self._raw_action_space*self.Qos_c
         self.action_max=10
         self.action_space =  Box(1, self.action_max, shape=(self._action_space_and_qos,), dtype=np.int)
-        
-        self.observation_space = Box(0.0, 1, shape=(self.env_config["observation_space"],), dtype=np.float32)
+        self.observation_space = Box(0.0, 12499998700, shape=(self.env_config["observation_space"],), dtype=np.float32)
         self.prev_observation=None
         self.prev_observation_no_norm=None
         #self.observation_space=None
@@ -67,16 +66,15 @@ class RL_CORE():
 
     def reset(self):
         self.prev_observation=[0 for _ in range(self.env_config["observation_space"])]
-        #self.prev_observation_no_norm=[0 for _ in range(self.env_config["observation_space"])]
-
+        self.prev_observation_no_norm=[0 for _ in range(self.env_config["observation_space"])]
         self.observation_space=self.env_config["observation_space"]
+        return  self.prev_observation_no_norm
 
-
-        return  self.prev_observation
     def step(self, action):
         print("RL WORK\n\n!!!\n\n")
         sys.stdout.flush()
         self.step_count=self.step_count+1
+
         #貪婪法則 教導強化學習每次選最好的
         if self.greddy_on and self.step_count%self.greedy_percent!=0 and self.prev_observation_no_norm!=None:
             #根據先前蒐集到的observation也就是真實環境的數據來修正強化學習action
@@ -84,8 +82,9 @@ class RL_CORE():
             reward=0
             
             each_len=self.observation_space/4
+            all_rw=[]
             for idx, edge_weight_in_tos in enumerate(action):
-                tos=192#int(idx/self._raw_action_space)
+                tos=80#int(idx/self._raw_action_space)
                 edge=int(idx%self._raw_action_space)
                 #這邊在乎各個qos的權重
                 latency_P=1#int(f"{tos:0{8}b}"[0:2],2)
@@ -111,11 +110,34 @@ class RL_CORE():
                 add_reward=((latency_R+jitter_R+loss_R)*(edge_weight_in_tos_OK))
 
                 reward=reward+add_reward
+                all_rw.append(add_reward)
                 print(edge_latency,reward,add_reward,edge_weight_in_tos,edge_weight_in_tos_OK,edge+self._raw_action_space*3)
+                sys.stdout.flush()
+            reward=0
+             
+
+            add_only_negtive=False
+            ng_v = list(filter(lambda all_rw: all_rw < 0, all_rw))
+            po_v = list(filter(lambda all_rw: all_rw >= 0, all_rw))
+            if len(ng_v)>0:
+                #當reward裡面還有負數就只加總負數
+                pass
+                reward=sum(ng_v)
+            else:
+                #reward都正才加
+                reward=sum(po_v)*10
+            
+            #如果reward為負號就持續訓練
+            if reward<0:
+                self.step_count=self.step_count-1
+
+
+            
             if np.isnan(reward):
                 reward=0
             print(reward)
-            return self.prev_observation,reward, False,{}#"""
+            sys.stdout.flush()
+            return self.prev_observation_no_norm,reward, False,{}#"""
         #-----------------------------------------------------------------------    
         
         self.action_uuid=self.action_uuid+1
@@ -139,7 +161,8 @@ class RL_CORE():
         sys.stdout.flush()
         self.prev_observation=m_d["obs"]
         self.prev_observation_no_norm=m_d["obs_no_norm"]
-        return m_d["obs"],m_d["reward"], False,{}
+
+        return self.prev_observation_no_norm,m_d["reward"], False,{}
   
 def entry():
     print("entry start")
@@ -158,9 +181,10 @@ def entry():
     ray.init()
     config = ppo.DEFAULT_CONFIG.copy()
     config["env_config"]=message_dict
-    config['model']['fcnet_hiddens'] = [5, 5]
+    #config['model']['fcnet_hiddens'] = [5, 5]
+    config["train_batch_size"]=10000
     #config["gamma"]=0.01
-    #config["lr"]=0.01
+    #config["lr"]=1
     #config["train_batch_size"]=50
      
 
@@ -177,22 +201,23 @@ def entry():
         if file_name!="":
             trainer.restore(file_name)
     except:
-        #os.remove("checkpoint_path")
         pass"""
+        #os.remove("checkpoint_path")
+        
     #trainer.restore("/home/lu-yi-hsun/ray_results/PPO_RL_CORE_2021-11-08_21-54-5392o8g072/checkpoint_000002/checkpoint-2")
      
     print('啟動AI模組2\n\n')
      
     while True:
         trainer.train()
-        checkpoint_path=trainer.save()
-        f=open("checkpoint_path","w+")
+        #checkpoint_path=trainer.save()
+        """f=open("checkpoint_path","w+")
         print(checkpoint_path)
         sys.stdout.flush()
         f.write(checkpoint_path)
         f.flush()
         f.close()
-        
+        """
            
 
         #  Wait for next request from client

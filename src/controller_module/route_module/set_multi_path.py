@@ -4,6 +4,8 @@ from controller_module.route_module import prioritylib
 from nested_dict import *
 from ryu.lib.packet import ether_types 
 import networkx as nx
+from ryu.lib import hub
+import time
 from controller_module import OFPT_FLOW_MOD,OFPT_PACKET_OUT,OFPT_GROUP_MOD
 def setting_multi_route_path(self, route_path_list, weight_list, dst, prev_path=[],prev_weight=[],tos=0,idle_timeout=0,hard_timeout=0, delivery_schemes="unicast"):
         """
@@ -91,6 +93,8 @@ def setting_multi_route_path(self, route_path_list, weight_list, dst, prev_path=
         print("刪除光原先的group entry flow entry重新設定")
         #刪除光原先的group entry flow entry重新設定
         self.clear_multi_route_path(dst, priority)
+        time.sleep(GLOBAL_VALUE.setting_path_delay)#這邊假定d
+
         print("設定只有岔路需要設定group entry")
         #設定只有岔路需要設定group entry
         set_switch_for_barrier=set()

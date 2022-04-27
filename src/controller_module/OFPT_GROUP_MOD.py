@@ -2,6 +2,8 @@ from ryu.ofproto import ofproto_v1_5
 from controller_module import GLOBAL_VALUE
 from ryu.lib.packet import ethernet, arp, icmp, ipv4
 from sklearn.preprocessing import minmax_scale
+from ryu.lib import pack_utils
+
 #這裡探討如何設定select的hash
 #https://github.com/openvswitch/ovs/blob/master/Documentation/group-selection-method-property.txt
 
@@ -94,16 +96,24 @@ def send_add_group_mod_v1(datapath,port_list:list,weight_list:list,group_id:int,
     #https://github.com/openvswitch/ovs/blob/master/Documentation/group-selection-method-property.txt
     #底下黑魔法寫法 ryu的OFPGroupBucketPropExperimenter結構不適合寫我硬繞過去所以醜醜
     
-    #目前範例不啟用
+   
      
     properties=[]
+    #目前還不可用
+    """
+    hash_alog="nohash"
+    hash_alog="hash"
 
-    """hash_alog="nohash"
     if hash_alog=="hash":
         #"hash" ascii == 0x68617368 
-        hash_alog_magic=[0,0x68617368,0,0,0,0,0]
+        
+        hash_alog_magic=[0,     0x68617368,0,0,0,                   0,0,                      0xFFFF0008]
+                        #pad,   selection_method[1:4]           selection_method_param      OXM header      OFPXMC_EXPERIMENTER(FFFF)
         _select_method=ofp_parser.OFPGroupBucketPropExperimenter(type_=ofp.OFPGBPT_EXPERIMENTER,exp_type=1,experimenter=0x0000154d,data=hash_alog_magic)
-        properties=[_select_method]"""
+        
+        properties=[_select_method]
+    """
+
     mod = ofp_parser.OFPGroupMod(datapath, command=command,type_=ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets,properties=properties)
     if dry_run:
         return mod

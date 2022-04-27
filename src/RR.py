@@ -49,6 +49,9 @@ import time
 import json
 import threading
 from filelock import FileLock
+
+np.seterr(invalid='raise')#嘗試可以輸出numpy log
+
 #---------------------------------------------------
 """
                         客製化權重計算演算法
@@ -108,7 +111,7 @@ class RinformanceRoute(app_manager.RyuApp):
             self._rl_zmq_connecter_thread=threading.Thread(target=self.rl_zmq_connecter, args=())
             self._rl_zmq_connecter_thread.start()
 
-            print("啟動橋化學習")
+            print("啟動強化學習")
 
             self.al_module = Process(target=RL.entry, args=())
             self.al_module.start()
@@ -270,21 +273,21 @@ class RinformanceRoute(app_manager.RyuApp):
             #  Wait for next request from client
              
             message = self.read_for_robot()
-            
-            #  Do some 'work'
-             
+
             try:
                 message_list=json.loads(message)
                 message_action_uuid=int(message_list["action_uuid"])
                 #print(message_action_uuid,action_uuid)
-                if message_action_uuid<action_uuid:
+                if message_action_uuid<=action_uuid:
                     #為了確保action是新的
+                    hub.sleep(0.1)
                     continue
                 action_uuid=message_action_uuid
                 message_list=message_list["action"]
             except:
-                hub.sleep(1)
+                hub.sleep(0.1)
                 continue
+            
             print("ACTIONs",message_list)
             e_index=0
             #把ai回傳的權重放入拓樸
@@ -315,6 +318,8 @@ class RinformanceRoute(app_manager.RyuApp):
             #FIXME 回傳
             print("step_data",step_data)
             self.write_for_rl(str(json.dumps(step_data)))
+ 
+
             #socket.send(str(json.dumps(step_data)).encode("utf8"))
     def read_for_robot(self):
         pass 

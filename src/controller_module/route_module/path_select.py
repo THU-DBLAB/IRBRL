@@ -52,7 +52,7 @@ def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapa
         prev_node=None
         for node in path:  
             if prev_node!=None:
-                print(prev_node,node,GLOBAL_VALUE.G[prev_node][node].keys())
+                #print(prev_node,node,GLOBAL_VALUE.G[prev_node][node].keys())
                 if weight in GLOBAL_VALUE.G[prev_node][node]:
                     loop_check.add_edge(prev_node, node, weight=GLOBAL_VALUE.G[prev_node][node][weight])
                 else:
@@ -64,7 +64,7 @@ def k_shortest_path_loop_free_version(self,k,src_datapath_id,src_port,dst_datapa
         if _check_free:
             #沒有發生loop所以我們可以蒐集起來
             loop_free_path.append(path)
-            print(path)
+            #print(path)
             path_length.append(path_weight(GLOBAL_VALUE.G, path, weight=weight))
             #所有k條loop free路線,這些路線的權重
     
